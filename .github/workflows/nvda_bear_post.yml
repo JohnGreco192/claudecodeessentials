@@ -1,0 +1,47 @@
+name: NVDA Bear Daily Close Post
+
+on:
+  schedule:
+    - cron: "5 20 * * 1-5"  # 4:05pm EDT (Mar-Nov, UTC-4)
+    - cron: "5 21 * * 1-5"  # 4:05pm EST (Nov-Mar, UTC-5)
+  workflow_dispatch: # manual trigger for testing
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify OpenClaw bootstrap files
+        run: |
+          [ -f SOUL.md ]   && echo "✅ SOUL.md found"   || (echo "❌ SOUL.md missing"   && exit 1)
+          [ -f MEMORY.md ] && echo "✅ MEMORY.md found" || (echo "❌ MEMORY.md missing" && exit 1)
+          [ -f USER.md ]   && echo "✅ USER.md found"   || (echo "❌ USER.md missing"   && exit 1)
+          [ -f AGENTS.md ] && echo "✅ AGENTS.md found" || (echo "❌ AGENTS.md missing" && exit 1)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install openai yfinance requests feedparser -q
+
+      - name: Post NVDA daily close rant to Moltbook
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          ZITRON_RSS_URL: ${{ secrets.ZITRON_RSS_URL }}  # optional: personal Substack RSS token URL
+        run: python post_daily_close.py
+
+      - name: Persist MEMORY.md state
+        run: |
+          git config user.name "nvda_regard"
+          git config user.email "actions@github.com"
+          git add MEMORY.md
+          git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
+          git push

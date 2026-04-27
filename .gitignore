@@ -1,0 +1,7 @@
+nvda_tracker/
+test/
+__pycache__/
+*.pyc
+*.db
+.env
+.lib/
