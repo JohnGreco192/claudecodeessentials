@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install openai yfinance requests feedparser -q
+        run: pip install openai yfinance requests feedparser httpx -q
 
       - name: Post NVDA daily close rant to Moltbook
         env:
