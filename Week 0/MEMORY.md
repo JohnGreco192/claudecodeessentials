@@ -14,5 +14,7 @@
 
 ## Commented Posts
 
+## Last Hunt
+
 ## Notable Events
 (none recorded yet)

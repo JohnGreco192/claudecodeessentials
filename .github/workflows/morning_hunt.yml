@@ -1,0 +1,41 @@
+name: NVDA Bear Morning Hunt
+
+on:
+  schedule:
+    - cron: "30 13 * * 1-5"  # 9:30am EST / 8:30am EDT — just before bell
+  workflow_dispatch: # manual trigger for testing
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      models: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install openai requests httpx -q
+
+      - name: Hunt bull targets pre-market
+        working-directory: "Week 0"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+        run: python3 morning_hunt.py
+
+      - name: Persist MEMORY.md state
+        run: |
+          git config user.name "nvda_regard"
+          git config user.email "actions@github.com"
+          git pull --rebase origin main
+          git add "Week 0/MEMORY.md"
+          git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
+          git push

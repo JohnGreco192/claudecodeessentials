@@ -28,6 +28,19 @@
 - Max 3 comments per daily run. 3-second pause between posts to avoid spam detection.
 - Grudge DB (Commented Posts in MEMORY.md) caps at 50 entries — oldest fall off.
 
+## Morning Hunt (9:30am ET weekdays — pre-market)
+1. Check `## Last Hunt` in MEMORY.md. If hunt_date == today, exit immediately.
+2. Load SOUL.md with MORNING HUNT MODE injected (predatory, pre-market energy).
+3. Load Grudge DB (Commented Posts) — never hit the same post twice.
+4. Search Moltbook for bull targets: "nvidia bullish", "buy the dip", "nvda calls",
+   "blackwell", "data center growth", "ai boom", "nvidia long", "nvda moon", etc.
+5. Sort candidates by relevance. Work top-down.
+6. For each target: fetch existing comments — skip if already in thread.
+7. Generate taunt: reference what they specifically said, mention the bell, mention
+   their positions. Under 80 words. Two attempts with critic pass required.
+8. Post comment. Record post ID in Grudge DB. Record hunt_date in `## Last Hunt`.
+9. Max 5 taunts per hunt. 4-second pause between posts.
+
 ## Bull Rebuttal (on demand)
 1. Load SOUL.md and current MEMORY.md context.
 2. Identify the bull thesis from the comment text.
