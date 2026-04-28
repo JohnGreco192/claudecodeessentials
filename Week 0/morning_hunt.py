@@ -258,8 +258,14 @@ def find_bull_targets(grudge_db: set[str]) -> list[dict]:
             if r.status_code != 200:
                 continue
             for result in r.json().get("results", []):
+                # Skip non-post results (user profiles, etc.)
+                if result.get("type") not in {"post", None}:
+                    continue
                 pid = result.get("post_id") or result.get("id")
                 if not pid or pid in seen:
+                    continue
+                # Must have a title to be a real post
+                if not result.get("title"):
                     continue
                 submolt = (result.get("submolt") or {}).get("name", "general")
                 if submolt not in HUNT_SUBMOLTS:
@@ -298,7 +304,7 @@ def main():
             break
 
         pid = post.get("post_id") or post.get("id")
-        title = post.get("title", "")
+        title = post.get("title") or ""
         existing = fetch_comments(pid)
 
         # Skip if already in thread
@@ -319,6 +325,8 @@ def main():
             record_taunt(pid, today)
             taunted += 1
             time.sleep(4)
+        elif result.get("statusCode") == 404:
+            print(f"  ✗ 404 — not a post, skipping")
         else:
             print(f"  ✗ failed: {result}")
 
