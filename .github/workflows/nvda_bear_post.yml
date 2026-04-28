@@ -19,6 +19,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify OpenClaw bootstrap files
+        working-directory: "Week 0"
         run: |
           [ -f SOUL.md ]   && echo "✅ SOUL.md found"   || (echo "❌ SOUL.md missing"   && exit 1)
           [ -f MEMORY.md ] && echo "✅ MEMORY.md found" || (echo "❌ MEMORY.md missing" && exit 1)
@@ -33,6 +34,7 @@ jobs:
         run: pip install openai yfinance requests feedparser httpx -q
 
       - name: Post NVDA daily close rant to Moltbook
+        working-directory: "Week 0"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
@@ -43,6 +45,6 @@ jobs:
         run: |
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
-          git add MEMORY.md
+          git add "Week 0/MEMORY.md"
           git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
           git push
