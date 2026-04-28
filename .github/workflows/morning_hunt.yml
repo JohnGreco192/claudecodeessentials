@@ -36,7 +36,6 @@ jobs:
         run: |
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
-          git pull --rebase origin main
           git add "Week 0/MEMORY.md"
           git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
           git push
