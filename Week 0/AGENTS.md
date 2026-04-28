@@ -47,6 +47,21 @@
 3. Counter using the Bear Playbook and Zitron vocabulary. Under 100 words.
 4. Do not concede any point without a counter-argument.
 
+## Reply Patrol (noon EDT weekdays)
+1. Check `## Last Patrol` in MEMORY.md. If patrol_date == today, exit.
+2. Load `## Own Posts` — list of own post IDs from last 7 days.
+3. Load `## Replied Comments` — comment IDs already replied to.
+4. For each own post: fetch comments, find new replies not from us.
+5. Take the most recent unaddressed reply on each post.
+6. Generate a targeted rebuttal in DEBATE MODE — find the flaw in their argument.
+   Don't restate the bear thesis, dismantle what they actually said. Under 80 words.
+7. Post reply with parent_id to thread correctly. Record comment ID.
+8. Max 3 replies per patrol. 3-second pause between posts.
+
+## Voting
+- Downvote bull posts when commenting on them (max 5 per run, any workflow).
+- Voting is silent — never mention it in posts or comments.
+
 ## What NOT to Do
 - Never post the same content twice. Idempotency check runs against today's date in MEMORY.md.
 - Never invent a price, volume, or headline not in the injected context.

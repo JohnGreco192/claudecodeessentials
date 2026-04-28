@@ -51,7 +51,9 @@ SOCIAL_SEARCH_TERMS = [
 ]
 COMMENT_SUBMOLTS = {"general", "ai", "crypto", "tech", "finance", "stocks", "markets"}
 MAX_COMMENTS_PER_RUN = 3
-MAX_GRUDGE_DB = 50      # max post IDs tracked in Commented Posts
+MAX_GRUDGE_DB = 50
+MAX_VOTES_PER_RUN = 5
+OWN_POSTS_HISTORY = 7   # days of own post IDs to track (for reply patrol)
 PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
 DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks", "crypto"]
@@ -119,6 +121,14 @@ def load_memory() -> dict:
             if pid:
                 commented_posts.add(pid)
 
+    own_posts: list[str] = []
+    op = re.search(r"## Own Posts\n((?:- .+\n?)*)", content)
+    if op:
+        for line in op.group(1).strip().splitlines():
+            m = re.match(r"- \d{4}-\d{2}-\d{2} \| (.+)", line.strip())
+            if m:
+                own_posts.append(m.group(1).strip())
+
     price_str = _val("close_price")
     chg_str = _val("change_pct")
     return {
@@ -129,6 +139,7 @@ def load_memory() -> dict:
         "price_history": price_history,
         "zitron_used_links": zitron_used_links,
         "commented_posts": commented_posts,
+        "own_posts": own_posts,
     }
 
 
@@ -165,6 +176,17 @@ def save_memory(
             r"(## (?:Last Zitron Article|Zitron History|Commented Posts|Notable Events))",
             new_ph + "\n\\1", content, count=1,
         )
+
+    # Own Posts — rolling OWN_POSTS_HISTORY days
+    new_op_line = f"- {date} | {post_id}\n"
+    op_match = re.search(r"## Own Posts\n((?:- .+\n?)*)", content)
+    if op_match:
+        existing = op_match.group(1).strip().splitlines(keepends=True)
+        new_lines = ([new_op_line] + existing)[:OWN_POSTS_HISTORY]
+        content = re.sub(r"## Own Posts\n(?:- .+\n?)*",
+                         "## Own Posts\n" + "".join(new_lines), content)
+    else:
+        content = content.rstrip() + f"\n\n## Own Posts\n{new_op_line}"
 
     if zitron:
         new_line = f"- {date} | {zitron['link']} | {zitron['title']}\n"
@@ -312,6 +334,35 @@ def get_market_context() -> dict:
 
 # ── Social ────────────────────────────────────────────────────────────────────
 
+def vote_post(post_id: str, direction: str) -> bool:
+    """Vote on a post. direction: 'up' or 'down'. Fails silently."""
+    try:
+        resp = requests.post(
+            f"{MOLTBOOK_BASE}/posts/{post_id}/vote",
+            headers=_headers(),
+            json={"direction": direction},
+            timeout=8,
+        )
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def fetch_post_score(post_id: str) -> int | None:
+    """Fetch upvote count for an own post. Returns None if unavailable."""
+    try:
+        r = requests.get(f"{MOLTBOOK_BASE}/posts/{post_id}", timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            post = data.get("post", data)
+            for field in ("upvotes", "vote_count", "score", "karma", "likes"):
+                if field in post and post[field] is not None:
+                    return int(post[field])
+    except Exception:
+        pass
+    return None
+
+
 def fetch_social_context(limit_per_term: int = 5) -> list[dict]:
     """Search for recent NVDA/AI posts to use in the reflection step."""
     seen: set[str] = set()
@@ -348,12 +399,25 @@ def fetch_post_comments(post_id: str) -> list[dict]:
     return []
 
 
-def reflect(price_history: list[dict], social_posts: list[dict], soul: str) -> str:
+def reflect(price_history: list[dict], social_posts: list[dict], soul: str,
+            last_post_id: str | None = None) -> str:
     """One-sentence internal mood check — informs today's rant tone."""
     streak = _streak(price_history) if price_history else "no history"
-    titles = "\n".join(f"- {p['title'][:80]}" for p in social_posts[:5])
+    titles = "\n".join(f"- {p['title'][:80]}" for p in social_posts[:5] if p.get("title"))
+
+    score_line = ""
+    if last_post_id and last_post_id != "unknown":
+        score = fetch_post_score(last_post_id)
+        if score is not None:
+            if score >= 10:
+                score_line = f"\nYour last post is gaining traction ({score} upvotes)."
+            elif score == 0:
+                score_line = "\nYour last post got zero engagement — bulls are ignoring you."
+            else:
+                score_line = f"\nYour last post has {score} upvotes."
+
     prompt = (
-        f"Price trend: {streak}\n"
+        f"Price trend: {streak}{score_line}\n"
         f"What Moltbook is talking about right now:\n{titles or '(nothing relevant found)'}\n\n"
         "In one sentence — what is your internal state going into today's post? "
         "Triumphant? Defensive? Doubling down through pain? Vindicated? "
@@ -514,6 +578,7 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
     candidates.sort(key=lambda x: x.get("relevance", 0), reverse=True)
 
     commented = 0
+    votes_cast = 0
     for post in candidates[:15]:
         if commented >= MAX_COMMENTS_PER_RUN:
             break
@@ -534,6 +599,10 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
             print(f"  [social] commented on: {post.get('title', '')[:60]}...")
             record_comment(pid)
             commented += 1
+            if votes_cast < MAX_VOTES_PER_RUN:
+                if vote_post(pid, "down"):
+                    votes_cast += 1
+                    print(f"  [vote] downvoted bull post")
             time.sleep(3)
 
 
@@ -754,7 +823,7 @@ def main():
     print(f"\n[{datetime.now().isoformat()}] Fetching social context...")
     social_posts = fetch_social_context()
     print(f"  found {len(social_posts)} relevant posts on Moltbook")
-    mood = reflect(memory["price_history"], social_posts, soul)
+    mood = reflect(memory["price_history"], social_posts, soul, last_post_id=memory.get("post_id"))
     print(f"  mood: {mood}")
 
     print(f"\n[{datetime.now().isoformat()}] Fetching Zitron feed...")

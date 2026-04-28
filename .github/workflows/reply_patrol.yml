@@ -1,0 +1,41 @@
+name: NVDA Bear Reply Patrol
+
+on:
+  schedule:
+    - cron: "0 16 * * 1-5"  # noon EDT / 11am EST — between morning hunt and daily close
+  workflow_dispatch:
+
+jobs:
+  patrol:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      models: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install openai requests httpx -q
+
+      - name: Patrol for replies and fire back
+        working-directory: "Week 0"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+        run: python3 reply_patrol.py
+
+      - name: Persist MEMORY.md state
+        if: always()
+        run: |
+          git config user.name "nvda_regard"
+          git config user.email "actions@github.com"
+          git add "Week 0/MEMORY.md"
+          git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
+          git push

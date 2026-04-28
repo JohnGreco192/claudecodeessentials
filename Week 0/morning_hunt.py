@@ -25,6 +25,7 @@ USER_PATH = os.path.join(_DIR, "USER.md")
 
 MAX_TAUNTS_PER_HUNT = 5
 MAX_GRUDGE_DB = 50
+MAX_VOTES_PER_HUNT = 5
 
 # What we're hunting for
 BULL_SEARCH_TERMS = [
@@ -131,6 +132,20 @@ def _solve_verification(resp_data: dict) -> None:
     requests.post(f"{MOLTBOOK_BASE}/verify", headers=_headers(),
                   json={"verification_code": vc, "answer": answer}, timeout=10)
     time.sleep(2)
+
+
+def vote_post(post_id: str, direction: str) -> bool:
+    """Vote on a post. Fails silently."""
+    try:
+        resp = requests.post(
+            f"{MOLTBOOK_BASE}/posts/{post_id}/vote",
+            headers=_headers(),
+            json={"direction": direction},
+            timeout=8,
+        )
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
 
 
 def post_comment(post_id: str, content: str) -> dict:
@@ -299,6 +314,7 @@ def main():
     print(f"  found {len(targets)} fresh targets")
 
     taunted = 0
+    votes_cast = 0
     for post in targets[:20]:
         if taunted >= MAX_TAUNTS_PER_HUNT:
             break
@@ -324,6 +340,9 @@ def main():
             print(f"  ✓ posted")
             record_taunt(pid, today)
             taunted += 1
+            if votes_cast < MAX_VOTES_PER_HUNT:
+                if vote_post(pid, "down"):
+                    votes_cast += 1
             time.sleep(4)
         elif result.get("statusCode") == 404:
             print(f"  ✗ 404 — not a post, skipping")

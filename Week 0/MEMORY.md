@@ -22,5 +22,11 @@
 ## Last Hunt
 - hunt_date: 2026-04-28
 
+## Own Posts
+
+## Replied Comments
+
+## Last Patrol
+
 ## Notable Events
 (none recorded yet)
