@@ -28,10 +28,16 @@ USER_PATH = os.path.join(_DIR, "USER.md")
 
 ZITRON_FEED = os.environ.get("ZITRON_RSS_URL", "https://www.wheresyoured.at/rss")
 
-MARKET_RSS_FEEDS = [
+SEMI_AI_FEEDS = [
     "https://feeds.reuters.com/reuters/technologyNews",
     "https://venturebeat.com/feed/",
     "https://techcrunch.com/feed/",
+]
+
+# Unfiltered — the LLM decides what matters, not keywords
+MACRO_FEEDS = [
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://feeds.bloomberg.com/markets/news.rss",
 ]
 
 _SEMI_AI_FILTER = {
@@ -380,10 +386,10 @@ def fetch_earnings_context() -> str | None:
 
 
 def fetch_market_headlines(max_items: int = 6) -> list[str]:
-    """Pull semiconductor/AI headlines from tech RSS feeds."""
+    """Pull semiconductor/AI headlines — keyword filtered for relevance."""
     seen: set[str] = set()
     headlines = []
-    for url in MARKET_RSS_FEEDS:
+    for url in SEMI_AI_FEEDS:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:20]:
@@ -400,11 +406,78 @@ def fetch_market_headlines(max_items: int = 6) -> list[str]:
     return headlines[:max_items]
 
 
+def fetch_macro_headlines(max_items: int = 12) -> list[str]:
+    """Pull broad macro/financial headlines — no filtering, LLM decides what matters."""
+    seen: set[str] = set()
+    headlines = []
+    for url in MACRO_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:15]:
+                title = getattr(entry, "title", "").strip()
+                if title and title not in seen:
+                    seen.add(title)
+                    headlines.append(title)
+            if len(headlines) >= max_items:
+                break
+        except Exception:
+            continue
+    return headlines[:max_items]
+
+
+def assess_catalysts(semi_headlines: list[str], macro_headlines: list[str]) -> dict:
+    """LLM analyst pass — finds direct, indirect, and black swan signals.
+
+    Deliberately NOT using the bear soul here — we want analytical output,
+    not WSB energy. Low temperature, research mode.
+    Returns {"synthesis": str, "black_swan_watch": [str], "flagged": [str]}
+    """
+    all_lines = semi_headlines + macro_headlines
+    if not all_lines:
+        return {"synthesis": "", "black_swan_watch": [], "flagged": []}
+
+    headlines_block = "\n".join(f"- {h}" for h in all_lines)
+    prompt = (
+        "You are a financial analyst briefing an NVDA bear agent. "
+        "Scan today's headlines for bear thesis relevance.\n\n"
+        f"HEADLINES:\n{headlines_block}\n\n"
+        "Identify three categories:\n"
+        "1. FLAGGED: Headlines directly relevant to the NVDA bear thesis "
+        "(chip demand, AI capex, competition, earnings, export controls)\n"
+        "2. INDIRECT: Non-obvious connections — FOMC rate decisions affecting "
+        "risk assets, private credit funding AI capex, hyperscaler spending guidance, "
+        "sovereign stress, liquidity signals\n"
+        "3. BLACK_SWAN_WATCH: Anything that feels like an early-stage systemic "
+        "risk precursor — even if the NVDA connection isn't obvious yet. "
+        "Private credit blowups, shadow banking stress, unexpected regulatory "
+        "actions, geopolitical escalation, anything that rhymes with prior crises.\n\n"
+        "Think analytically. Make non-obvious connections. A rising tide hides rocks.\n\n"
+        'Return JSON only:\n'
+        '{"flagged": ["..."], "indirect": ["..."], "black_swan_watch": ["..."], '
+        '"synthesis": "one sentence on what the broader picture looks like today"}'
+    )
+    try:
+        resp = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.15,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+    except Exception:
+        pass
+    return {"synthesis": "", "black_swan_watch": [], "flagged": []}
+
+
 def record_notable_events(
     nvda_headlines: list[str],
     market_headlines: list[str],
     earnings_context: str | None,
     today: str,
+    catalyst_assessment: dict | None = None,
 ) -> None:
     """Detect notable events and append new ones to ## Notable Events."""
     with open(MEMORY_PATH) as f:
@@ -415,13 +488,21 @@ def record_notable_events(
     if earnings_context and earnings_context not in content:
         new_events.append(f"- {today}: {earnings_context}")
 
+    # Keyword-matched events (earnings, Fed, trade, macro)
     all_text = " ".join(nvda_headlines + market_headlines).lower()
     for category, keywords in _EVENT_SIGNALS.items():
         matching = [h for h in (nvda_headlines + market_headlines)
                     if any(kw in h.lower() for kw in keywords)]
         if matching and matching[0] not in content:
             new_events.append(f"- {today}: [{category.upper()}] {matching[0][:120]}")
-            break  # one auto-detected event per day is enough
+            break
+
+    # LLM-identified black swan signals — these are the unknowns we can't keyword-filter
+    if catalyst_assessment:
+        for flag in catalyst_assessment.get("black_swan_watch", [])[:2]:
+            entry = f"- {today}: [BLACK SWAN WATCH] {flag[:150]}"
+            if flag[:50] not in content:
+                new_events.append(entry)
 
     if not new_events:
         return
@@ -744,6 +825,7 @@ def build_context(
     zitron: dict | None = None,
     earnings_context: str | None = None,
     market_headlines: list[str] | None = None,
+    catalyst_assessment: dict | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -793,6 +875,21 @@ def build_context(
         broad_lines = "\n".join(f"- {h}" for h in market_headlines)
         broad_block = f"\nSEMICONDUCTOR / AI HEADLINES:\n{broad_lines}"
 
+    catalyst_block = ""
+    if catalyst_assessment:
+        parts = []
+        synthesis = catalyst_assessment.get("synthesis", "")
+        if synthesis:
+            parts.append(f"Analyst read: {synthesis}")
+        indirect = catalyst_assessment.get("indirect", [])
+        if indirect:
+            parts.append("Indirect catalysts: " + "; ".join(indirect[:2]))
+        bsw = catalyst_assessment.get("black_swan_watch", [])
+        if bsw:
+            parts.append("⚠️ BLACK SWAN WATCH: " + "; ".join(bsw[:2]))
+        if parts:
+            catalyst_block = "\nMACRO CATALYST SCAN:\n" + "\n".join(f"- {p}" for p in parts)
+
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
@@ -803,6 +900,7 @@ def build_context(
         f"{mood_block}\n"
         f"Today's headlines:\n{news_block}"
         f"{broad_block}"
+        f"{catalyst_block}"
         f"{zitron_block}"
     )
 
@@ -957,14 +1055,23 @@ def main():
     headlines = get_nvda_news()
     earnings_context = fetch_earnings_context()
     market_headlines = fetch_market_headlines()
+    macro_headlines = fetch_macro_headlines()
     print(f"  price: ${price['price']} ({price['change_pct']:+.2f}%)")
     print(f"  market: {market}")
     print(f"  earnings: {earnings_context or 'none upcoming'}")
-    print(f"  market headlines: {len(market_headlines)} fetched")
+    print(f"  semi/AI headlines: {len(market_headlines)} | macro headlines: {len(macro_headlines)}")
+
+    print(f"  running catalyst scan...")
+    catalyst_assessment = assess_catalysts(market_headlines, macro_headlines)
+    if catalyst_assessment.get("synthesis"):
+        print(f"  analyst read: {catalyst_assessment['synthesis']}")
+    if catalyst_assessment.get("black_swan_watch"):
+        print(f"  ⚠️ black swan watch: {catalyst_assessment['black_swan_watch']}")
 
     context = build_context(price, headlines, memory, market, mood, zitron,
                             earnings_context=earnings_context,
-                            market_headlines=market_headlines)
+                            market_headlines=market_headlines,
+                            catalyst_assessment=catalyst_assessment)
     print(f"\n[{datetime.now().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
@@ -989,7 +1096,8 @@ def main():
         price_history=memory["price_history"],
         zitron=zitron,
     )
-    record_notable_events(headlines, market_headlines, earnings_context, today)
+    record_notable_events(headlines, market_headlines, earnings_context, today,
+                          catalyst_assessment=catalyst_assessment)
     print(f"[OpenClaw] MEMORY.md updated — session {today} (post_id: {post_id}).")
 
     # Social engagement — drop targeted bear comments on relevant posts
