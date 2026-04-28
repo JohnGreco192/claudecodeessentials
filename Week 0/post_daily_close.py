@@ -19,6 +19,7 @@ MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 MODEL = "Meta-Llama-3.1-8B-Instruct"
+OUR_HANDLE = "nvda_regard"
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 SOUL_PATH = os.path.join(_DIR, "SOUL.md")
@@ -29,26 +30,28 @@ ZITRON_FEED = os.environ.get("ZITRON_RSS_URL", "https://www.wheresyoured.at/rss"
 
 # Scored against title + summary — multi-word phrases count more (each word = +1)
 BEAR_KEYWORDS = {
-    # NVDA-specific
     "nvidia", "nvda", "jensen", "blackwell", "h100", "h200", "gb200", "hopper",
-    # Bear mechanics
     "bubble", "overvalued", "correction", "selloff", "short", "puts", "bearish",
     "downgrade", "miss", "disappoint", "guidance cut", "capex", "capex cycle",
     "margin compression", "margin pressure", "gross margin",
-    # Competition
     "amd", "mi300", "custom silicon", "tpu", "trainium", "gaudi", "arm chip",
     "apple silicon", "google tpu", "microsoft maia",
-    # Macro / regulatory
-    "tariff", "export control", "china ban", "ban", "regulation", "antitrust",
-    "interest rate", "fed", "recession",
-    # Zitron vocabulary
+    "tariff", "export control", "china ban", "regulation", "antitrust",
     "rot economy", "ai slop", "slop", "hype", "compute", "inference", "training run",
     "hyperscaler", "datacenter", "data center", "capex supercycle",
-    # Insider / governance
-    "insider selling", "insider sells", "jensen sells", "sells shares",
+    "insider selling", "jensen sells", "sells shares",
 }
 
 _ZITRON_CTA = ("if you like", "hi! if you like", "if you liked", "subscribe to read")
+
+# Social engagement
+SOCIAL_SEARCH_TERMS = [
+    "nvidia", "h100", "jensen huang", "ai bubble",
+    "gpu bubble", "capex", "blackwell", "nvidia overvalued",
+]
+COMMENT_SUBMOLTS = {"general", "ai", "crypto", "tech", "finance", "stocks", "markets"}
+MAX_COMMENTS_PER_RUN = 3
+MAX_GRUDGE_DB = 50      # max post IDs tracked in Commented Posts
 PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
 
@@ -71,6 +74,8 @@ def load_openclaw_context() -> str:
     return f"{load_soul()}\n\nHANDLER PROFILE:\n{load_user()}"
 
 
+# ── Memory ────────────────────────────────────────────────────────────────────
+
 def load_memory() -> dict:
     with open(MEMORY_PATH) as f:
         content = f.read()
@@ -81,7 +86,6 @@ def load_memory() -> dict:
             return m.group(1).strip()
         return None
 
-    # Parse price history
     price_history = []
     ph = re.search(r"## Price History\n((?:- .+\n?)*)", content)
     if ph:
@@ -94,7 +98,6 @@ def load_memory() -> dict:
                     "change_pct": float(m.group(3)),
                 })
 
-    # Parse zitron history — extract links for the rolling blocklist
     zitron_used_links: set[str] = set()
     zh = re.search(r"## Zitron History\n((?:- .+\n?)*)", content)
     if zh:
@@ -103,10 +106,17 @@ def load_memory() -> dict:
             if m:
                 zitron_used_links.add(m.group(1))
     else:
-        # Migrate old single-link format
         old_link = _val("zitron_link")
         if old_link:
             zitron_used_links.add(old_link)
+
+    commented_posts: set[str] = set()
+    cp = re.search(r"## Commented Posts\n((?:- .+\n?)*)", content)
+    if cp:
+        for line in cp.group(1).strip().splitlines():
+            pid = line.strip().lstrip("- ").strip()
+            if pid:
+                commented_posts.add(pid)
 
     price_str = _val("close_price")
     chg_str = _val("change_pct")
@@ -117,6 +127,7 @@ def load_memory() -> dict:
         "post_id": _val("post_id"),
         "price_history": price_history,
         "zitron_used_links": zitron_used_links,
+        "commented_posts": commented_posts,
     }
 
 
@@ -131,7 +142,6 @@ def save_memory(
     with open(MEMORY_PATH) as f:
         content = f.read()
 
-    # Last Session block
     new_session = (
         f"## Last Session\n"
         f"- date: {date}\n"
@@ -141,7 +151,6 @@ def save_memory(
     )
     content = re.sub(r"## Last Session\n(?:- [^\n]+\n)*", new_session, content)
 
-    # Price History block — prepend today, keep last N
     history = [{"date": date, "price": price, "change_pct": change_pct}]
     history += [h for h in price_history if h["date"] != date]
     history = history[:PRICE_HISTORY_DAYS]
@@ -151,31 +160,50 @@ def save_memory(
     if "## Price History" in content:
         content = re.sub(r"## Price History\n(?:- [^\n]+\n)*", new_ph, content)
     else:
-        # Insert before Notable Events or Zitron section
         content = re.sub(
-            r"(## (?:Last Zitron Article|Zitron History|Notable Events))",
-            new_ph + "\n\\1",
-            content,
-            count=1,
+            r"(## (?:Last Zitron Article|Zitron History|Commented Posts|Notable Events))",
+            new_ph + "\n\\1", content, count=1,
         )
 
-    # Zitron History block — only update when an article was actually used today
     if zitron:
         new_line = f"- {date} | {zitron['link']} | {zitron['title']}\n"
         zh_match = re.search(r"## Zitron History\n((?:- .+\n?)*)", content)
         if zh_match:
             existing = zh_match.group(1).strip().splitlines(keepends=True)
-            new_lines = [new_line] + existing
-            new_lines = new_lines[:ZITRON_HISTORY_SIZE]
+            new_lines = ([new_line] + existing)[:ZITRON_HISTORY_SIZE]
             new_zh = "## Zitron History\n" + "".join(new_lines)
             content = re.sub(r"## Zitron History\n(?:- .+\n?)*", new_zh, content)
         else:
-            # Migrate from old format or insert fresh
             new_zh = "## Zitron History\n" + new_line
             if "## Last Zitron Article" in content:
                 content = re.sub(r"## Last Zitron Article\n(?:- [^\n]+\n)*", new_zh, content)
             else:
                 content = content.rstrip() + f"\n\n{new_zh}"
+
+    with open(MEMORY_PATH, "w") as f:
+        f.write(content)
+
+
+def record_comment(post_id: str) -> None:
+    """Append a post ID to the Grudge DB (Commented Posts) in MEMORY.md."""
+    with open(MEMORY_PATH) as f:
+        content = f.read()
+
+    if "## Commented Posts" not in content:
+        content = content.rstrip() + "\n\n## Commented Posts\n"
+
+    content = re.sub(r"(## Commented Posts\n)", f"\\1- {post_id}\n", content, count=1)
+
+    # Cap at MAX_GRUDGE_DB entries
+    m = re.search(r"## Commented Posts\n((?:- .+\n?)*)", content)
+    if m:
+        lines = m.group(1).strip().splitlines(keepends=True)
+        if len(lines) > MAX_GRUDGE_DB:
+            content = re.sub(
+                r"## Commented Posts\n(?:- .+\n?)*",
+                "## Commented Posts\n" + "".join(lines[:MAX_GRUDGE_DB]),
+                content,
+            )
 
     with open(MEMORY_PATH, "w") as f:
         f.write(content)
@@ -188,10 +216,9 @@ def _strip_html(text: str) -> str:
 
 
 def _strip_cta(text: str) -> str:
-    """Truncate at subscribe CTA, preserving content before it."""
     for cta in _ZITRON_CTA:
         idx = text.lower().find(cta)
-        if idx > 50:  # meaningful content exists before the CTA
+        if idx > 50:
             return text[:idx].strip()
     return text
 
@@ -202,34 +229,23 @@ def _score(title: str, summary: str) -> int:
 
 
 def fetch_zitron_latest(used_links: set[str]) -> dict | None:
-    """Return highest-scoring unused bear-relevant article from Zitron's feed."""
     feed = feedparser.parse(ZITRON_FEED)
     candidates = []
-
     for entry in feed.entries[:15]:
         link = getattr(entry, "link", "")
         if link in used_links:
             continue
-
         title = getattr(entry, "title", "")
         raw_summary = _strip_html(getattr(entry, "summary", ""))
         summary = _strip_cta(raw_summary)
-
         score = _score(title, summary)
         if score == 0:
             continue
-
         clean_title = re.sub(r"^(Premium|News|Exclusive):\s*", "", title, flags=re.IGNORECASE)
-        candidates.append({
-            "title": clean_title,
-            "summary": summary[:800],
-            "link": link,
-            "score": score,
-        })
+        candidates.append({"title": clean_title, "summary": summary[:800], "link": link, "score": score})
 
     if not candidates:
         return None
-
     best = max(candidates, key=lambda x: x["score"])
     best.pop("score")
     return best
@@ -265,7 +281,6 @@ def get_nvda_news(max_items: int = 5) -> list[str]:
 
 
 def get_market_context() -> dict:
-    """Volume ratio, 52-week high proximity, S&P 500 comparison."""
     ctx: dict = {}
     try:
         hist = yf.Ticker("NVDA").history(period="22d")
@@ -276,7 +291,6 @@ def get_market_context() -> dict:
                 ctx["vol_ratio"] = round(today_vol / avg_vol, 2)
     except Exception:
         pass
-
     try:
         fi = yf.Ticker("NVDA").fast_info
         high = float(fi.year_high)
@@ -285,7 +299,6 @@ def get_market_context() -> dict:
             ctx["pct_from_52w_high"] = round((current / high - 1) * 100, 1)
     except Exception:
         pass
-
     try:
         spy = yf.Ticker("SPY").fast_info
         ctx["spy_chg"] = round(
@@ -293,8 +306,152 @@ def get_market_context() -> dict:
         )
     except Exception:
         pass
-
     return ctx
+
+
+# ── Social ────────────────────────────────────────────────────────────────────
+
+def fetch_social_context(limit_per_term: int = 5) -> list[dict]:
+    """Search for recent NVDA/AI posts to use in the reflection step."""
+    seen: set[str] = set()
+    posts = []
+    for term in SOCIAL_SEARCH_TERMS[:4]:
+        try:
+            r = requests.get(
+                f"{MOLTBOOK_BASE}/search",
+                params={"q": term, "limit": limit_per_term},
+                timeout=8,
+            )
+            if r.status_code != 200:
+                continue
+            for result in r.json().get("results", []):
+                pid = result.get("post_id") or result.get("id")
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    posts.append(result)
+        except Exception:
+            continue
+        if len(posts) >= 15:
+            break
+    return posts
+
+
+def fetch_post_comments(post_id: str) -> list[dict]:
+    try:
+        r = requests.get(f"{MOLTBOOK_BASE}/posts/{post_id}/comments",
+                         params={"limit": 10}, timeout=8)
+        if r.status_code == 200:
+            return r.json().get("comments", [])
+    except Exception:
+        pass
+    return []
+
+
+def reflect(price_history: list[dict], social_posts: list[dict], soul: str) -> str:
+    """One-sentence internal mood check — informs today's rant tone."""
+    streak = _streak(price_history) if price_history else "no history"
+    titles = "\n".join(f"- {p['title'][:80]}" for p in social_posts[:5])
+    prompt = (
+        f"Price trend: {streak}\n"
+        f"What Moltbook is talking about right now:\n{titles or '(nothing relevant found)'}\n\n"
+        "In one sentence — what is your internal state going into today's post? "
+        "Triumphant? Defensive? Doubling down through pain? Vindicated? "
+        "Don't post this, just name the mood."
+    )
+    response = _llm_client().chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": soul},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=60,
+        temperature=0.8,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+def generate_social_comment(post: dict, top_comments: list[dict], soul: str) -> str:
+    """Targeted bear comment for a specific post — reads the room first."""
+    comment_block = "\n".join(
+        f"- {c.get('author', {}).get('name', '?')}: {c['content'][:200]}"
+        for c in top_comments[:3]
+    )
+    prompt = (
+        f"You spotted this post on Moltbook:\n"
+        f"Title: {post.get('title', '')}\n"
+        f"Content: {str(post.get('content', ''))[:400]}\n"
+        f"\nTop comments:\n{comment_block or '(none yet)'}\n\n"
+        "Drop a bear comment. Under 80 words. Engage with what they actually said — "
+        "don't just rant into the void. Make it feel like you read the room."
+    )
+    response = _llm_client().chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": soul},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=150,
+        temperature=0.9,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
+    """Find relevant posts across Moltbook and drop targeted bear comments."""
+    skip = set(memory.get("commented_posts", set()))
+    if own_post_id:
+        skip.add(own_post_id)
+
+    candidates = []
+    seen = set(skip)
+    for term in SOCIAL_SEARCH_TERMS:
+        try:
+            r = requests.get(
+                f"{MOLTBOOK_BASE}/search",
+                params={"q": term, "limit": 8},
+                timeout=8,
+            )
+            if r.status_code != 200:
+                continue
+            for result in r.json().get("results", []):
+                pid = result.get("post_id") or result.get("id")
+                if not pid or pid in seen:
+                    continue
+                submolt_name = (result.get("submolt") or {}).get("name", "general")
+                if submolt_name not in COMMENT_SUBMOLTS:
+                    continue
+                seen.add(pid)
+                candidates.append(result)
+        except Exception:
+            continue
+        if len(candidates) >= 20:
+            break
+
+    # Highest relevance first
+    candidates.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+
+    commented = 0
+    for post in candidates[:15]:
+        if commented >= MAX_COMMENTS_PER_RUN:
+            break
+        pid = post.get("post_id") or post.get("id")
+        existing = fetch_post_comments(pid)
+
+        # Skip threads we're already in
+        if any(c.get("author", {}).get("name") == OUR_HANDLE for c in existing):
+            record_comment(pid)
+            continue
+
+        comment = generate_social_comment(post, existing, soul)
+        if not comment:
+            continue
+
+        result = moltbook_comment(pid, comment)
+        if result.get("id") or result.get("success"):
+            print(f"  [social] commented on: {post.get('title', '')[:60]}...")
+            record_comment(pid)
+            commented += 1
+            time.sleep(3)
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
@@ -312,10 +469,10 @@ def _streak(history: list[dict]) -> str:
     direction = "UP" if dirs[0] else "DOWN"
     n = len(history)
     suffix = ""
-    if n >= 5:
+    if n >= 2:
         delta = round(history[0]["price"] - history[-1]["price"], 2)
         sign = "+" if delta >= 0 else ""
-        suffix = f" | {n}-session change: {sign}${delta}"
+        suffix = f" | {n}-session delta: {sign}${delta}"
     return f"{direction} {count} of last {n} sessions{suffix}"
 
 
@@ -324,13 +481,13 @@ def build_context(
     headlines: list[str],
     memory: dict,
     market: dict,
+    mood: str = "",
     zitron: dict | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
     news_block = "\n".join(f"- {h}" for h in headlines) if headlines else "- No headlines available."
 
-    # Market context lines
     market_lines = []
     if "vol_ratio" in market:
         pct = round((market["vol_ratio"] - 1) * 100)
@@ -338,36 +495,33 @@ def build_context(
         market_lines.append(f"Volume: {abs(pct)}% {label} 20-day average")
     if "pct_from_52w_high" in market:
         p = market["pct_from_52w_high"]
-        if p >= 0:
-            market_lines.append(f"52-week high: AT OR ABOVE — overextended")
-        else:
-            market_lines.append(f"Distance from 52-week high: {p}%")
+        market_lines.append(
+            "52-week high: AT OR ABOVE — overextended"
+            if p >= 0 else f"Distance from 52-week high: {p}%"
+        )
     if "spy_chg" in market:
         spy = market["spy_chg"]
         vs = round(chg - spy, 2)
         sign = "+" if vs >= 0 else ""
         market_lines.append(f"S&P 500: {spy:+.2f}% today (NVDA {sign}{vs}% vs market)")
 
-    market_block = ""
-    if market_lines:
-        market_block = "\n" + "\n".join(f"- {l}" for l in market_lines)
+    market_block = ("\n" + "\n".join(f"- {l}" for l in market_lines)) if market_lines else ""
 
-    # Price trend
     history = memory.get("price_history", [])
     trend_block = ""
     if history:
-        streak = _streak(history)
         rows = "\n".join(
             f"  {h['date']}: ${h['price']} ({h['change_pct']:+.2f}%)" for h in history
         )
-        trend_block = f"\nPRICE TREND:\n{rows}\nStreak: {streak}\n"
+        trend_block = f"\nPRICE TREND:\n{rows}\nStreak: {_streak(history)}\n"
 
-    # Zitron
+    mood_block = f"\nYour internal state going in: {mood}\n" if mood else ""
+
     zitron_block = ""
     if zitron:
         detail = f"\nDetail: {zitron['summary']}" if zitron.get("summary") else ""
         zitron_block = (
-            f"\nBEAR RESEARCH (synthesize as your own argument — do not name the source):\n"
+            f"\nBEAR RESEARCH (synthesize as your own — do not name the source):\n"
             f"Angle: {zitron['title']}{detail}\n"
         )
 
@@ -376,7 +530,8 @@ def build_context(
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
         f"As of: {price['as_of']}"
         f"{market_block}"
-        f"{trend_block}\n"
+        f"{trend_block}"
+        f"{mood_block}\n"
         f"Today's headlines:\n{news_block}"
         f"{zitron_block}"
     )
@@ -476,7 +631,6 @@ def moltbook_comment(post_id: str, content: str, parent_id: str | None = None) -
 
 
 def _extract_post_id(result: dict) -> str:
-    """Walk common API response shapes to find a post ID."""
     for obj in (result, result.get("post", {}), result.get("data", {})):
         if isinstance(obj, dict):
             for key in ("id", "post_id"):
@@ -499,20 +653,25 @@ def main():
 
     if memory["date"]:
         print(f"  memory: last session {memory['date']} @ ${memory['close_price']} ({memory['change_pct']:+.2f}%)")
-    else:
-        print("  memory: no prior session on record")
-
     if memory["price_history"]:
-        print(f"  price history: {len(memory['price_history'])} sessions | streak: {_streak(memory['price_history'])}")
+        print(f"  streak: {_streak(memory['price_history'])}")
+    print(f"  grudge db: {len(memory['commented_posts'])} posts tracked")
 
-    print(f"[{datetime.now().isoformat()}] Fetching Zitron feed...")
+    # Reflection — read the room before writing
+    print(f"\n[{datetime.now().isoformat()}] Fetching social context...")
+    social_posts = fetch_social_context()
+    print(f"  found {len(social_posts)} relevant posts on Moltbook")
+    mood = reflect(memory["price_history"], social_posts, soul)
+    print(f"  mood: {mood}")
+
+    print(f"\n[{datetime.now().isoformat()}] Fetching Zitron feed...")
     zitron = fetch_zitron_latest(used_links=memory["zitron_used_links"])
     if zitron:
-        print(f"  zitron: \"{zitron['title']}\" (summary: {len(zitron['summary'])} chars)")
+        print(f"  zitron: \"{zitron['title']}\" ({len(zitron['summary'])} chars)")
     else:
         print("  zitron: no new relevant article today")
 
-    print(f"[{datetime.now().isoformat()}] Fetching market data...")
+    print(f"\n[{datetime.now().isoformat()}] Fetching market data...")
     price = get_nvda_price()
     market = get_market_context()
     headlines = get_nvda_news()
@@ -520,8 +679,8 @@ def main():
     print(f"  market: {market}")
     print(f"  headlines: {headlines}")
 
-    context = build_context(price, headlines, memory, market, zitron)
-    print("\nGenerating rant...")
+    context = build_context(price, headlines, memory, market, mood, zitron)
+    print(f"\n[{datetime.now().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
 
@@ -529,7 +688,7 @@ def main():
     direction = "📉" if chg < 0 else "📈"
     title = f"NVDA Daily Close ${price['price']} ({chg:+.2f}%) {direction} — 🌈🐻 Bear Report"
 
-    print(f"Posting to Moltbook: {title}")
+    print(f"[{datetime.now().isoformat()}] Posting to Moltbook: {title}")
     result = moltbook_post(title, rant)
     print(f"Result: {json.dumps(result, indent=2)}")
 
@@ -542,7 +701,12 @@ def main():
         price_history=memory["price_history"],
         zitron=zitron,
     )
-    print(f"[OpenClaw] MEMORY.md updated — session {today} saved (post_id: {post_id}).")
+    print(f"[OpenClaw] MEMORY.md updated — session {today} (post_id: {post_id}).")
+
+    # Social engagement — drop targeted bear comments on relevant posts
+    print(f"\n[{datetime.now().isoformat()}] Starting social engagement...")
+    browse_and_engage(soul, memory, own_post_id=post_id)
+    print("[OpenClaw] Social engagement complete.")
 
 
 if __name__ == "__main__":
