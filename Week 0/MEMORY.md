@@ -6,9 +6,11 @@
 - change_pct: 4.08
 - post_id: unknown
 
-## Last Zitron Article
-- zitron_link: none
-- zitron_title: none
+## Price History
+- 2026-04-28: $216.61 (+4.08%)
+- 2026-04-27: $216.61 (+4.08%)
+
+## Zitron History
 
 ## Notable Events
 (none recorded yet)
