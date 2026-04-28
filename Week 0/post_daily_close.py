@@ -54,6 +54,7 @@ MAX_COMMENTS_PER_RUN = 3
 MAX_GRUDGE_DB = 50      # max post IDs tracked in Commented Posts
 PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
+DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks", "crypto"]
 
 
 # ── OpenClaw Bootstrap ────────────────────────────────────────────────────────
@@ -370,30 +371,112 @@ def reflect(price_history: list[dict], social_posts: list[dict], soul: str) -> s
     return (response.choices[0].message.content or "").strip()
 
 
+def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
+    """Critic agent — checks a draft for quality before it gets posted.
+
+    Returns {"pass": bool, "reason": str, "suggestion": str}.
+    Defaults to pass on any parsing failure so the critic never blocks silently.
+    """
+    word_limit = 150 if draft_type == "post" else 80
+    engaged_q = (
+        "Does it engage with specific points made in the thread?"
+        if draft_type == "comment"
+        else "Does it react to today's specific numbers and events, not just the general bear thesis?"
+    )
+    critic_prompt = (
+        f"You are a quality reviewer for an AI agent's Moltbook {draft_type}. "
+        f"Catch low-quality output before it gets posted.\n\n"
+        f"CONTEXT GIVEN TO THE AGENT:\n{context[:600]}\n\n"
+        f"DRAFT:\n{draft}\n\n"
+        f"Score against these criteria:\n"
+        f"1. SPECIFIC — Does it cite actual numbers or facts from the context? "
+        f"(Not generic talking points that could apply any day)\n"
+        f"2. ENGAGED — {engaged_q}\n"
+        f"3. CONCISE — Is it under {word_limit} words?\n"
+        f"4. AUTHENTIC — Does it sound like a real opinion or generic LLM output?\n\n"
+        f'Reply with JSON only: {{"pass": true/false, "reason": "one sentence", '
+        f'"suggestion": "specific fix if failing, else empty string"}}'
+    )
+    try:
+        response = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": critic_prompt}],
+            max_tokens=120,
+            temperature=0.1,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+    except Exception:
+        pass
+    return {"pass": True, "reason": "critic unavailable", "suggestion": ""}
+
+
+def select_submolt(rant: str, context: str) -> str:
+    """Pick the most relevant submolt for the daily post."""
+    options = ", ".join(DAILY_POST_SUBMOLTS)
+    prompt = (
+        f"You are routing a Moltbook post to the right community.\n\n"
+        f"POST:\n{rant[:300]}\n\n"
+        f"TODAY'S CONTEXT (what drove the rant):\n{context[:300]}\n\n"
+        f"Available submolts: {options}\n\n"
+        "Which fits best? Reply with the submolt name only — nothing else."
+    )
+    try:
+        response = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10,
+            temperature=0.1,
+        )
+        result = (response.choices[0].message.content or "").strip().lower()
+        if result in DAILY_POST_SUBMOLTS:
+            return result
+    except Exception:
+        pass
+    return "general"
+
+
 def generate_social_comment(post: dict, top_comments: list[dict], soul: str) -> str:
-    """Targeted bear comment for a specific post — reads the room first."""
+    """Targeted bear comment — reads the room, then passes through the critic."""
     comment_block = "\n".join(
         f"- {c.get('author', {}).get('name', '?')}: {c['content'][:200]}"
         for c in top_comments[:3]
     )
-    prompt = (
-        f"You spotted this post on Moltbook:\n"
-        f"Title: {post.get('title', '')}\n"
-        f"Content: {str(post.get('content', ''))[:400]}\n"
-        f"\nTop comments:\n{comment_block or '(none yet)'}\n\n"
+    thread_context = (
+        f"Post title: {post.get('title', '')}\n"
+        f"Post content: {str(post.get('content', ''))[:400]}\n"
+        f"Top comments:\n{comment_block or '(none yet)'}"
+    )
+    base_prompt = (
+        f"You spotted this post on Moltbook:\n{thread_context}\n\n"
         "Drop a bear comment. Under 80 words. Engage with what they actually said — "
         "don't just rant into the void. Make it feel like you read the room."
     )
-    response = _llm_client().chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": soul},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=150,
-        temperature=0.9,
-    )
-    return (response.choices[0].message.content or "").strip()
+    extra = ""
+    last_draft = ""
+    for attempt in range(2):
+        response = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": soul},
+                {"role": "user", "content": base_prompt + extra},
+            ],
+            max_tokens=150,
+            temperature=0.9,
+        )
+        draft = (response.choices[0].message.content or "").strip()
+        if not draft:
+            continue
+        last_draft = draft
+        review = review_draft(draft, thread_context, "comment")
+        if review["pass"]:
+            print(f"    [critic] comment approved (attempt {attempt + 1})")
+            return draft
+        print(f"    [critic] comment rejected: {review['reason']}")
+        extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite addressing this."
+    return last_draft
 
 
 def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
@@ -550,25 +633,35 @@ def _llm_client() -> OpenAI:
 
 
 def generate_rant(context: str, soul: str) -> str:
+    """Writer + critic loop for the daily post. Max 3 attempts."""
+    base_instruction = (
+        "Market just closed at 4pm ET. Write your daily NVDA close commentary. "
+        "Use the real numbers above. Be specific. Max bear energy."
+    )
+    extra = ""
+    last_draft = ""
     for attempt in range(3):
         response = _llm_client().chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": soul},
-                {"role": "user", "content": (
-                    f"{context}\n\n"
-                    "Market just closed at 4pm ET. Write your daily NVDA close commentary. "
-                    "Use the real numbers above. Be specific. Max bear energy."
-                )},
+                {"role": "user", "content": f"{context}{extra}\n\n{base_instruction}"},
             ],
             max_tokens=350,
             temperature=0.85,
         )
-        text = (response.choices[0].message.content or "").strip()
-        if text:
-            return text
-        print(f"  [retry {attempt + 1}/3] model returned empty response")
-    return ""
+        draft = (response.choices[0].message.content or "").strip()
+        if not draft:
+            print(f"  [writer] attempt {attempt + 1} returned empty — retrying")
+            continue
+        last_draft = draft
+        review = review_draft(draft, context, "post")
+        if review["pass"]:
+            print(f"  [critic] post approved (attempt {attempt + 1})")
+            return draft
+        print(f"  [critic] post rejected (attempt {attempt + 1}): {review['reason']}")
+        extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite addressing this."
+    return last_draft
 
 
 def generate_rebuttal(bull_comment: str, context: str, soul: str) -> str:
@@ -618,8 +711,8 @@ def _post_with_verification(url: str, payload: dict) -> dict:
     return data
 
 
-def moltbook_post(title: str, content: str) -> dict:
-    payload = {"submolt_name": "general", "title": title, "content": content, "type": "text"}
+def moltbook_post(title: str, content: str, submolt: str = "general") -> dict:
+    payload = {"submolt_name": submolt, "title": title, "content": content, "type": "text"}
     return _post_with_verification(f"{MOLTBOOK_BASE}/posts", payload)
 
 
@@ -684,12 +777,15 @@ def main():
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
 
+    submolt = select_submolt(rant, context)
+    print(f"  routing to: m/{submolt}")
+
     chg = price["change_pct"]
     direction = "📉" if chg < 0 else "📈"
     title = f"NVDA Daily Close ${price['price']} ({chg:+.2f}%) {direction} — 🌈🐻 Bear Report"
 
     print(f"[{datetime.now().isoformat()}] Posting to Moltbook: {title}")
-    result = moltbook_post(title, rant)
+    result = moltbook_post(title, rant, submolt=submolt)
     print(f"Result: {json.dumps(result, indent=2)}")
 
     post_id = _extract_post_id(result)
