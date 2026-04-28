@@ -28,6 +28,19 @@ USER_PATH = os.path.join(_DIR, "USER.md")
 
 ZITRON_FEED = os.environ.get("ZITRON_RSS_URL", "https://www.wheresyoured.at/rss")
 
+MARKET_RSS_FEEDS = [
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://feeds.bloomberg.com/markets/news.rss",
+]
+
+# Keywords that signal a notable market event worth recording
+_EVENT_SIGNALS = {
+    "earnings":  ["earnings", "eps", "quarterly results", "revenue beat", "revenue miss", "guidance"],
+    "fed":       ["fomc", "rate cut", "rate hike", "federal reserve", "powell", "interest rate"],
+    "trade":     ["tariff", "export ban", "export control", "china ban", "trade war", "sanctions"],
+    "macro":     ["cpi", "pce", "jobs report", "nonfarm", "gdp", "recession", "inflation data"],
+}
+
 # Scored against title + summary — multi-word phrases count more (each word = +1)
 BEAR_KEYWORDS = {
     "nvidia", "nvda", "jensen", "blackwell", "h100", "h200", "gb200", "hopper",
@@ -330,6 +343,89 @@ def get_market_context() -> dict:
     except Exception:
         pass
     return ctx
+
+
+def fetch_earnings_context() -> str | None:
+    """Return a countdown string if NVDA earnings are within 30 days, else None."""
+    try:
+        cal = yf.Ticker("NVDA").calendar
+        if cal is None:
+            return None
+        dates = cal.get("Earnings Date") if hasattr(cal, "get") else None
+        if dates is None or len(dates) == 0:
+            return None
+        next_dt = dates[0]
+        next_date = next_dt.date() if hasattr(next_dt, "date") else next_dt
+        days = (next_date - datetime.now().date()).days
+        if days < 0:
+            return None
+        if days == 0:
+            return "⚠️ NVDA EARNINGS TODAY"
+        if days <= 7:
+            return f"⚠️ NVDA earnings in {days} days ({next_date})"
+        if days <= 30:
+            return f"NVDA earnings in {days} days ({next_date})"
+    except Exception:
+        pass
+    return None
+
+
+def fetch_market_headlines(max_items: int = 6) -> list[str]:
+    """Pull broader market headlines from Reuters/Bloomberg RSS."""
+    seen: set[str] = set()
+    headlines = []
+    for url in MARKET_RSS_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:12]:
+                title = getattr(entry, "title", "").strip()
+                if title and title not in seen:
+                    seen.add(title)
+                    headlines.append(title)
+            if len(headlines) >= max_items:
+                break
+        except Exception:
+            continue
+    return headlines[:max_items]
+
+
+def record_notable_events(
+    nvda_headlines: list[str],
+    market_headlines: list[str],
+    earnings_context: str | None,
+    today: str,
+) -> None:
+    """Detect notable events and append new ones to ## Notable Events."""
+    with open(MEMORY_PATH) as f:
+        content = f.read()
+
+    new_events: list[str] = []
+
+    if earnings_context and earnings_context not in content:
+        new_events.append(f"- {today}: {earnings_context}")
+
+    all_text = " ".join(nvda_headlines + market_headlines).lower()
+    for category, keywords in _EVENT_SIGNALS.items():
+        matching = [h for h in (nvda_headlines + market_headlines)
+                    if any(kw in h.lower() for kw in keywords)]
+        if matching and matching[0] not in content:
+            new_events.append(f"- {today}: [{category.upper()}] {matching[0][:120]}")
+            break  # one auto-detected event per day is enough
+
+    if not new_events:
+        return
+
+    for event in new_events:
+        if "## Notable Events" in content:
+            content = re.sub(
+                r"(## Notable Events\n)(\(none recorded yet\)\n?)?",
+                f"\\1{event}\n",
+                content, count=1,
+            )
+
+    with open(MEMORY_PATH, "w") as f:
+        f.write(content)
+    print(f"  [events] recorded: {len(new_events)} notable event(s)")
 
 
 # ── Social ────────────────────────────────────────────────────────────────────
@@ -635,6 +731,8 @@ def build_context(
     market: dict,
     mood: str = "",
     zitron: dict | None = None,
+    earnings_context: str | None = None,
+    market_headlines: list[str] | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -677,14 +775,23 @@ def build_context(
             f"Angle: {zitron['title']}{detail}\n"
         )
 
+    earnings_block = f"\n⚠️ CALENDAR: {earnings_context}" if earnings_context else ""
+
+    broad_block = ""
+    if market_headlines:
+        broad_lines = "\n".join(f"- {h}" for h in market_headlines)
+        broad_block = f"\nBROADER MARKET HEADLINES:\n{broad_lines}"
+
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
         f"As of: {price['as_of']}"
         f"{market_block}"
         f"{trend_block}"
+        f"{earnings_block}"
         f"{mood_block}\n"
         f"Today's headlines:\n{news_block}"
+        f"{broad_block}"
         f"{zitron_block}"
     )
 
@@ -837,11 +944,16 @@ def main():
     price = get_nvda_price()
     market = get_market_context()
     headlines = get_nvda_news()
+    earnings_context = fetch_earnings_context()
+    market_headlines = fetch_market_headlines()
     print(f"  price: ${price['price']} ({price['change_pct']:+.2f}%)")
     print(f"  market: {market}")
-    print(f"  headlines: {headlines}")
+    print(f"  earnings: {earnings_context or 'none upcoming'}")
+    print(f"  market headlines: {len(market_headlines)} fetched")
 
-    context = build_context(price, headlines, memory, market, mood, zitron)
+    context = build_context(price, headlines, memory, market, mood, zitron,
+                            earnings_context=earnings_context,
+                            market_headlines=market_headlines)
     print(f"\n[{datetime.now().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
@@ -866,6 +978,7 @@ def main():
         price_history=memory["price_history"],
         zitron=zitron,
     )
+    record_notable_events(headlines, market_headlines, earnings_context, today)
     print(f"[OpenClaw] MEMORY.md updated — session {today} (post_id: {post_id}).")
 
     # Social engagement — drop targeted bear comments on relevant posts
