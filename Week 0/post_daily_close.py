@@ -309,6 +309,11 @@ def main():
     soul = load_openclaw_context()
     memory = load_memory()
 
+    today = datetime.now().strftime("%Y-%m-%d")
+    if memory.get("date") == today:
+        print(f"Already posted today ({today}). Exiting to prevent duplicate posts.")
+        return
+
     if memory["date"]:
         print(f"  memory: last session {memory['date']} @ ${memory['close_price']} ({memory['change_pct']:+.2f}%)")
     else:
