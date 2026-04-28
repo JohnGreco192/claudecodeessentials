@@ -29,9 +29,18 @@ USER_PATH = os.path.join(_DIR, "USER.md")
 ZITRON_FEED = os.environ.get("ZITRON_RSS_URL", "https://www.wheresyoured.at/rss")
 
 MARKET_RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://feeds.reuters.com/reuters/technologyNews",
+    "https://venturebeat.com/feed/",
+    "https://techcrunch.com/feed/",
 ]
+
+_SEMI_AI_FILTER = {
+    "nvidia", "amd", "intel", "qualcomm", "tsmc", "arm ", "broadcom", "micron",
+    "gpu", "chip", "semiconductor", "foundry", "wafer",
+    "artificial intelligence", " ai ", "machine learning", "llm", "inference",
+    "data center", "hyperscaler", "blackwell", "hopper", "h100", "h200", "gb200",
+    "jensen", "lisa su", "pat gelsinger", "custom silicon", "capex",
+}
 
 # Keywords that signal a notable market event worth recording
 _EVENT_SIGNALS = {
@@ -371,15 +380,17 @@ def fetch_earnings_context() -> str | None:
 
 
 def fetch_market_headlines(max_items: int = 6) -> list[str]:
-    """Pull broader market headlines from Reuters/Bloomberg RSS."""
+    """Pull semiconductor/AI headlines from tech RSS feeds."""
     seen: set[str] = set()
     headlines = []
     for url in MARKET_RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:12]:
+            for entry in feed.entries[:20]:
                 title = getattr(entry, "title", "").strip()
-                if title and title not in seen:
+                if not title or title in seen:
+                    continue
+                if any(kw in title.lower() for kw in _SEMI_AI_FILTER):
                     seen.add(title)
                     headlines.append(title)
             if len(headlines) >= max_items:
@@ -780,7 +791,7 @@ def build_context(
     broad_block = ""
     if market_headlines:
         broad_lines = "\n".join(f"- {h}" for h in market_headlines)
-        broad_block = f"\nBROADER MARKET HEADLINES:\n{broad_lines}"
+        broad_block = f"\nSEMICONDUCTOR / AI HEADLINES:\n{broad_lines}"
 
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
