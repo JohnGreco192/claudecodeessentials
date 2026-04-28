@@ -15,7 +15,7 @@ Week 0/
 └── USER.md               # handler profile
 .github/workflows/
 ├── nvda_bear_post.yml    # fires 21:05 UTC (4pm ET)
-├── morning_hunt.yml      # fires 13:00 UTC (8am EDT / 9am EST)
+├── morning_hunt.yml      # fires 13:00 UTC (9am EDT / 8am EST)
 └── reply_patrol.yml      # fires 16:00 UTC (noon EDT / 11am EST)
 ```
 
@@ -24,18 +24,21 @@ Week 0/
 ## Three Daily Workflows
 
 ### Daily Close Post — 4pm ET
-Fires after market close. Idempotent: exits if today's date is already in `MEMORY.md`.
+Fires after market close. Idempotent: exits immediately if today's date is already in `MEMORY.md`.
 
 - **Social context** — searches Moltbook for current NVDA/AI discussion before writing
-- **Reflection** — LLM names a one-sentence internal mood (triumphant / defensive / vindicated / patient) based on price streak, social feed, and upvote count on the previous post; mood shifts tone without hardcoding
+- **Reflection** — LLM names a one-sentence internal mood (triumphant / defensive / vindicated / patient) based on price streak, social feed, and upvote count on the previous post; mood shifts tone day-to-day without hardcoding
 - **Zitron research** — scores Ed Zitron's RSS feed by bear keyword density; picks the highest-scoring article not in the rolling 5-article blocklist; strips paywall CTAs; injected as `BEAR RESEARCH` (source never named)
-- **Hard market context** — price, change %, volume vs 20-day avg, distance from 52-week high, S&P 500 delta, 5 Yahoo headlines; all injected before LLM runs so numbers can't be hallucinated
-- **Neural supervisor** — writer LLM (temp 0.9) + critic LLM (temp 0.1); critic checks specificity, authenticity, word count; passes feedback into next attempt
-- **Dynamic submolt routing** — third LLM call picks the best submolt (`general`, `ai`, `finance`, `stocks`, `crypto`)
+- **Hard market context** — price, change %, volume vs 20-day avg, distance from 52-week high, S&P 500 delta, Yahoo Finance headlines; all injected before LLM runs so numbers can't be hallucinated
+- **Earnings countdown** — yfinance calendar injects NVDA earnings date when within 30 days; flagged ⚠️ in context
+- **Semi/AI headlines** — Reuters Technology, VentureBeat, TechCrunch filtered for chip/AI relevance
+- **Macro catalyst scan** — unfiltered Reuters + Bloomberg feed passed to a low-temp LLM analyst that classifies headlines into: direct NVDA catalysts / indirect (FOMC, credit, capex) / black swan watch. Black swan flags are injected into context and auto-stamped to `## Notable Events` — catches what keyword filtering can't
+- **Neural supervisor** — writer LLM (temp 0.9) + critic LLM (temp 0.1); critic checks specificity, authenticity, word count; passes feedback into the next attempt
+- **Dynamic submolt routing** — third LLM call routes to the best submolt (`general`, `ai`, `finance`, `stocks`, `crypto`)
 - **Social engagement** — after posting, browses Moltbook and drops targeted comments on 3 relevant posts; reads the thread before responding; downvotes bull posts it engages with
 - **Grudge DB** — every commented post ID stored in `MEMORY.md`; agent never shows up twice in the same thread; capped at 50 entries
 
-### Morning Hunt — 8am EDT
+### Morning Hunt — 9am EDT
 Pre-market sweep for bullish NVDA posts before the bell.
 
 - Searches for bulls talking up NVDA (`"buy the dip"`, `"nvda calls"`, `"blackwell"`, `"ai boom"`, etc.)
@@ -64,7 +67,7 @@ Monitors own posts for replies and fires back.
 ## Own Posts           ← rolling 7-day post IDs (reply patrol source)
 ## Replied Comments    ← comment IDs already replied to (cap 50)
 ## Last Patrol         ← reply patrol idempotency stamp
-## Notable Events      ← manual annotations
+## Notable Events      ← auto-stamped by catalyst scan + manual annotations
 ```
 
 ---
