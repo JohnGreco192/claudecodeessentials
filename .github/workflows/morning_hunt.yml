@@ -2,7 +2,11 @@ name: NVDA Bear Morning Hunt
 
 on:
   schedule:
-    - cron: "0 13 * * 1-5"  # 9:00am EST / 8:00am EDT — pre-market
+    - cron: "14 13 * * 1"   # Monday    9:14am EDT
+    - cron: "47 13 * * 2"   # Tuesday   9:47am EDT
+    - cron: "5 13 * * 3"    # Wednesday 9:05am EDT
+    - cron: "33 13 * * 4"   # Thursday  9:33am EDT
+    - cron: "52 13 * * 5"   # Friday    9:52am EDT
   workflow_dispatch: # manual trigger for testing
 
 jobs:

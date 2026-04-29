@@ -1,16 +1,17 @@
 """
 Reply Patrol — monitors own posts for replies and fires back.
 Runs once mid-day via GitHub Actions. Max 3 replies per patrol.
-Shares MEMORY.md with the other two agents (read-only for Grudge DB).
+Shares MEMORY.md with the other agents.
 """
 import os
 import re
 import json
 import time
+import random
 import requests
 import httpx
 from openai import OpenAI
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
@@ -24,19 +25,49 @@ MEMORY_PATH = os.path.join(_DIR, "MEMORY.md")
 
 MAX_REPLIES_PER_PATROL = 3
 MAX_REPLIED_COMMENTS = 50
+MAX_COOLDOWN_ENTRIES = 100
+SKIP_PROBABILITY = 0.15
+USER_COOLDOWN_HOURS = 24
+
+_UTC = timezone.utc
+
+
+def _now_et() -> datetime:
+    now_utc = datetime.now(_UTC)
+    year = now_utc.year
+    mar1 = datetime(year, 3, 1, tzinfo=_UTC)
+    dst_start = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7, hours=7)
+    nov1 = datetime(year, 11, 1, tzinfo=_UTC)
+    dst_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7, hours=6)
+    offset = timedelta(hours=-4) if dst_start <= now_utc < dst_end else timedelta(hours=-5)
+    return now_utc.astimezone(timezone(offset))
+
 
 DEBATE_MODE = """
-DEBATE MODE — someone replied to your post with a counter-argument.
-Read their argument carefully. Find the specific flaw in their reasoning.
-Don't just restate the bear thesis — dismantle what they actually said.
-Use the Bear Playbook. Under 80 words. Surgical and specific.
-This is where you win arguments, not just shout.
+DEBATE MODE — someone replied to your post.
+Find the specific flaw in their reasoning. Address it directly.
+Do NOT restate the generic bear thesis — dismantle what they actually said.
+Vary your approach:
+  - Sometimes: a sharp question that exposes a gap in their logic
+  - Sometimes: a concrete data point that contradicts their claim
+  - Sometimes: a structural argument specific to what they raised
+  - Sometimes: a scenario where their reasoning breaks down
+
+Include at least one domain term: forward P/E, multiple compression, margin pressure,
+IV crush, capex cycle, gross margin, cost per token, insider selling.
+Under 80 words. Takes a clear stance.
 """
+
+_BANNED_PHRASES = [
+    "in today's world", "it's important to note", "as we can see",
+    "it's worth noting", "ultimately,", "have fun being poor",
+    "it's clear that", "needless to say", "as previously mentioned",
+]
 
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-def load_soul_with_debate_mode() -> str:
+def load_soul() -> str:
     with open(SOUL_PATH) as f:
         lines = f.readlines()
     base = "".join(l for l in lines if not l.startswith("# ")).strip()
@@ -46,7 +77,7 @@ def load_soul_with_debate_mode() -> str:
 # ── Memory ────────────────────────────────────────────────────────────────────
 
 def already_patrolled_today() -> bool:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now_et().strftime("%Y-%m-%d")
     with open(MEMORY_PATH) as f:
         content = f.read()
     m = re.search(r"^- patrol_date: (.+)$", content, re.MULTILINE)
@@ -79,15 +110,27 @@ def load_replied_comments() -> set[str]:
     return ids
 
 
+def load_interaction_cooldowns() -> dict[str, str]:
+    """Returns {username: last_interaction_isoformat}."""
+    with open(MEMORY_PATH) as f:
+        content = f.read()
+    cooldowns: dict[str, str] = {}
+    m = re.search(r"## Interaction Cooldowns\n((?:- .+\n?)*)", content)
+    if m:
+        for line in m.group(1).strip().splitlines():
+            match = re.match(r"- (.+?): (.+)", line.strip().lstrip("- "))
+            if match:
+                cooldowns[match.group(1).strip()] = match.group(2).strip()
+    return cooldowns
+
+
 def record_reply(comment_id: str) -> None:
     with open(MEMORY_PATH) as f:
         content = f.read()
 
     if "## Replied Comments" not in content:
         content = content.rstrip() + "\n\n## Replied Comments\n"
-
     content = re.sub(r"(## Replied Comments\n)", f"\\1- {comment_id}\n", content, count=1)
-
     m = re.search(r"## Replied Comments\n((?:- .+\n?)*)", content)
     if m:
         lines = m.group(1).strip().splitlines(keepends=True)
@@ -95,6 +138,31 @@ def record_reply(comment_id: str) -> None:
             content = re.sub(
                 r"## Replied Comments\n(?:- .+\n?)*",
                 "## Replied Comments\n" + "".join(lines[:MAX_REPLIED_COMMENTS]),
+                content,
+            )
+    with open(MEMORY_PATH, "w") as f:
+        f.write(content)
+
+
+def record_interaction_cooldown(username: str, timestamp: str) -> None:
+    with open(MEMORY_PATH) as f:
+        content = f.read()
+
+    new_entry = f"- {username}: {timestamp}\n"
+    if "## Interaction Cooldowns" not in content:
+        content = content.rstrip() + f"\n\n## Interaction Cooldowns\n{new_entry}"
+    else:
+        m = re.search(r"## Interaction Cooldowns\n((?:- .+\n?)*)", content)
+        if m:
+            existing = m.group(1).strip().splitlines(keepends=True)
+            # Remove stale entry for this user
+            existing = [l for l in existing
+                        if not l.strip().lstrip("- ").startswith(f"{username}:")]
+            existing = [new_entry] + existing
+            existing = existing[:MAX_COOLDOWN_ENTRIES]
+            content = re.sub(
+                r"## Interaction Cooldowns\n(?:- .+\n?)*",
+                "## Interaction Cooldowns\n" + "".join(existing),
                 content,
             )
 
@@ -189,10 +257,31 @@ def generate_reply(post: dict, comment: dict, soul: str) -> str:
     post_title = post.get("title") or "your post"
 
     context = f"Your original post: {post_title}\n{their_name} replied: {their_content}"
+
+    format_options = [
+        "identify the specific flaw in their argument and address it directly",
+        "ask a probing question that exposes a gap in their reasoning",
+        "cite the concrete market mechanic that contradicts their point",
+        "offer a scenario where their logic breaks down",
+    ]
+    attribution_options = [
+        "based on today's price action,",
+        "looking at the forward multiple here,",
+        "given what the options flow is showing,",
+        "after the capex coverage lately,",
+        "",
+        "",  # weighted toward no attribution
+    ]
+    chosen_format = random.choice(format_options)
+    attribution = random.choice(attribution_options)
+    attribution_str = f" {attribution}" if attribution else ""
+
     prompt = (
         f"{context}\n\n"
-        "They challenged you. Dismantle their specific argument. "
-        "Under 80 words. Reference what they actually said."
+        f"They pushed back.{attribution_str} {chosen_format}. "
+        "Do NOT restate the generic bear thesis — dismantle what they specifically said. "
+        "Must include at least one market term (P/E, multiple, margin, IV, capex, cost per token). "
+        "Under 80 words. Clear stance."
     )
 
     extra = ""
@@ -212,57 +301,83 @@ def generate_reply(post: dict, comment: dict, soul: str) -> str:
             continue
         last = draft
 
-        review_prompt = (
-            f"Context:\n{context}\n\nReply:\n{draft}\n\n"
-            "Does this reply (1) address their specific argument rather than generic bear points, "
-            "and (2) stay under 80 words?\n"
-            'JSON only: {"pass": true/false, "reason": "one sentence", "suggestion": ""}'
-        )
-        try:
-            rv = _llm_client().chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": review_prompt}],
-                max_tokens=80,
-                temperature=0.1,
-            )
-            text = (rv.choices[0].message.content or "").strip()
-            m = re.search(r"\{.*\}", text, re.DOTALL)
-            if m:
-                review = json.loads(m.group())
-                if review.get("pass"):
-                    print(f"    [critic] reply approved (attempt {attempt + 1})")
-                    return draft
-                extra = f"\n\nCRITIC: {review.get('suggestion', '')} — rewrite."
-                continue
-        except Exception:
-            pass
-        return draft
+        # Banned phrase check
+        lower = draft.lower()
+        for phrase in _BANNED_PHRASES:
+            if phrase in lower:
+                extra = f"\n\nCRITIC: Remove '{phrase}' — sounds templated. Rewrite."
+                break
+        else:
+            review = _review_reply(draft, context)
+            if review["pass"]:
+                print(f"    [critic] reply approved (attempt {attempt + 1})")
+                return draft
+            extra = f"\n\nCRITIC: {review.get('suggestion', '')} — rewrite."
 
     return last
+
+
+def _review_reply(draft: str, context: str) -> dict:
+    prompt = (
+        f"Context:\n{context}\n\nReply:\n{draft}\n\n"
+        "Evaluate:\n"
+        "1. SPECIFIC — Addresses their argument, not generic bear talking points?\n"
+        "2. DOMAIN LANGUAGE — Contains at least one market term (P/E, multiple, margin, IV, capex)?\n"
+        "3. STANCE — Takes a clear position, not wishy-washy or over-polite?\n"
+        "4. CONCISE — Under 80 words?\n"
+        'JSON only: {"pass": true/false, "reason": "one sentence", "suggestion": "specific fix"}'
+    )
+    try:
+        rv = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.1,
+        )
+        text = (rv.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+    except Exception:
+        pass
+    return {"pass": True, "reason": "critic unavailable", "suggestion": ""}
 
 
 # ── Patrol ────────────────────────────────────────────────────────────────────
 
 def main():
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"[{datetime.now().isoformat()}] Reply Patrol starting — {today}")
+    # Random 5–60 min startup delay
+    delay = random.randint(300, 3600)
+    print(f"  [startup] sleeping {delay}s before execution...")
+    time.sleep(delay)
 
-    if already_patrolled_today():
-        print(f"Already patrolled today ({today}). Exiting.")
+    today = _now_et().strftime("%Y-%m-%d")
+    print(f"[{_now_et().isoformat()}] Reply Patrol starting — {today} ET")
+
+    # 15% chance to skip this run entirely
+    if random.random() < SKIP_PROBABILITY:
+        print("  [skip] randomly skipping this run (15% probability)")
         return
 
-    soul = load_soul_with_debate_mode()
+    if already_patrolled_today():
+        print(f"Already patrolled today ({today} ET). Exiting.")
+        return
+
+    soul = load_soul()
     own_posts = load_own_posts()
     replied_comments = load_replied_comments()
+    cooldowns = load_interaction_cooldowns()
 
     print(f"  monitoring {len(own_posts)} own posts")
     print(f"  {len(replied_comments)} comments already replied to")
+    print(f"  {len(cooldowns)} users on interaction cooldown")
 
     if not own_posts:
         print("  no own posts tracked yet — exiting")
         record_patrol_date(today)
         return
 
+    now_et = _now_et()
     replies_posted = 0
     for post_id in own_posts:
         if replies_posted >= MAX_REPLIES_PER_PATROL:
@@ -290,26 +405,44 @@ def main():
         target = new_replies[-1]
         cid = target.get("id") or ""
         their_name = target.get("author", {}).get("name", "?")
+
+        # Per-user 24h cooldown
+        last_ts = cooldowns.get(their_name)
+        if last_ts:
+            try:
+                last_dt = datetime.fromisoformat(last_ts)
+                hours_since = (now_et - last_dt).total_seconds() / 3600
+                if hours_since < USER_COOLDOWN_HOURS:
+                    print(f"  [cooldown] {their_name} — replied {hours_since:.1f}h ago, skipping")
+                    continue
+            except Exception:
+                pass
+
         print(f"  replying to {their_name}: {(target.get('content') or '')[:60]}...")
 
         reply = generate_reply(post, target, soul)
         if not reply:
             continue
 
+        # Simulate natural response delay: 1–5 min between replies
+        inter_delay = random.randint(60, 300)
+        print(f"  [delay] waiting {inter_delay}s before posting reply...")
+        time.sleep(inter_delay)
+
         result = post_reply(post_id, reply, parent_id=cid or None)
         if result.get("id") or result.get("success"):
-            print(f"  ✓ reply posted")
+            print("  ✓ reply posted")
             if cid:
                 record_reply(cid)
+            record_interaction_cooldown(their_name, now_et.isoformat())
             replies_posted += 1
-            time.sleep(3)
         elif result.get("statusCode") == 404:
-            print(f"  ✗ 404 — post no longer exists")
+            print("  ✗ 404 — post no longer exists")
         else:
             print(f"  ✗ failed: {result}")
 
     record_patrol_date(today)
-    print(f"\n[{datetime.now().isoformat()}] Patrol complete — {replies_posted} replies posted.")
+    print(f"\n[{_now_et().isoformat()}] Patrol complete — {replies_posted} replies posted.")
 
 
 if __name__ == "__main__":

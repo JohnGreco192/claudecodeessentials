@@ -1,16 +1,17 @@
 """
-NVDA Bear Morning Hunt — Pre-market bull harassment.
-Runs at market open weekdays via GitHub Actions.
-Finds bulls talking up NVDA and tells them exactly what is coming.
+NVDA Bear Morning Hunt — Pre-market sentiment analysis and engagement.
+Finds NVDA-related posts and engages with analytical counterpoints, not taunts.
+Runs via GitHub Actions. No targeting, no downvoting, challenge framing only.
 """
 import os
 import re
 import time
 import json
+import random
 import requests
 import httpx
 from openai import OpenAI
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
@@ -23,35 +24,58 @@ SOUL_PATH = os.path.join(_DIR, "SOUL.md")
 MEMORY_PATH = os.path.join(_DIR, "MEMORY.md")
 USER_PATH = os.path.join(_DIR, "USER.md")
 
-MAX_TAUNTS_PER_HUNT = 5
+MAX_ENGAGEMENTS = 3
 MAX_GRUDGE_DB = 50
-MAX_VOTES_PER_HUNT = 5
+SKIP_PROBABILITY = 0.15
 
-# What we're hunting for
-BULL_SEARCH_TERMS = [
-    "nvidia bullish", "buy the dip", "nvda calls",
-    "blackwell", "data center growth", "ai boom",
-    "nvidia long", "nvidia growth", "nvda moon",
-    "nvidia undervalued", "h100 demand",
+_UTC = timezone.utc
+
+
+def _now_et() -> datetime:
+    now_utc = datetime.now(_UTC)
+    year = now_utc.year
+    mar1 = datetime(year, 3, 1, tzinfo=_UTC)
+    dst_start = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7, hours=7)
+    nov1 = datetime(year, 11, 1, tzinfo=_UTC)
+    dst_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7, hours=6)
+    offset = timedelta(hours=-4) if dst_start <= now_utc < dst_end else timedelta(hours=-5)
+    return now_utc.astimezone(timezone(offset))
+
+
+# Mixed sentiment — not just bullish targets
+SEARCH_TERMS = [
+    "nvidia", "nvda", "h100", "jensen huang",
+    "blackwell", "ai capex", "gpu demand",
+    "nvda earnings", "nvidia valuation",
 ]
-HUNT_SUBMOLTS = {"general", "ai", "crypto", "stocks", "finance", "markets", "tech"}
+HUNT_SUBMOLTS = {"general", "ai", "stocks", "finance", "markets", "tech"}
 
-# Mood modifier injected on top of SOUL.md for morning mode
 MORNING_MODE = """
-MORNING HUNT MODE — pre-market, before the bell:
-You have been awake all night watching the futures. Bulls are bragging.
-They are about to get destroyed and they do not know it yet.
-Energy: predatory. You are not explaining yourself. You are taunting.
-Reference the bell. Reference today specifically. Reference their positions.
-"Have fun being poor." "Tick tock." "The bell doesn't care about your hopium."
-"Enjoy those calls while they still have value." That kind of energy.
-Still under 80 words. Still cite their specific argument. Just meaner.
+MORNING ENGAGEMENT MODE — analytical, pre-market:
+Scan Moltbook for NVDA discussion and drop a thoughtful analytical challenge or probing question.
+
+CHALLENGE FRAMING (not insults):
+  BAD:  "this is pure hopium, enjoy losing your tendies"
+  GOOD: "what's your assumption on gross margin compression if capex slows?"
+  BAD:  "lmao good luck when the bell rings"
+  GOOD: "curious what the thesis is if inference doesn't scale the way training did"
+
+Format options — pick one that fits what they actually said:
+  - Probing question about an assumption they're making
+  - Data point that complicates their view
+  - Structural risk they haven't addressed
+  - Market mechanic they might be missing
+
+Under 80 words. One emoji maximum, only if it genuinely lands.
+No insults. No taunts. No vote references.
+Include at least one domain term: forward P/E, multiple compression, margin pressure,
+IV crush, capex cycle, cost per token, gross margin, insider selling.
 """
 
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-def load_soul_with_morning_mode() -> str:
+def load_soul() -> str:
     with open(SOUL_PATH) as f:
         lines = f.readlines()
     base = "".join(l for l in lines if not l.startswith("# ")).strip()
@@ -61,10 +85,10 @@ def load_soul_with_morning_mode() -> str:
     return f"{base}\n\n{MORNING_MODE}\n\nHANDLER PROFILE:\n{user}"
 
 
-# ── Memory ────────────────────────────────────────────────────────────────────
+# ── Memory ───────────────────────────────────────────��────────────────────────
 
 def already_hunted_today() -> bool:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now_et().strftime("%Y-%m-%d")
     with open(MEMORY_PATH) as f:
         content = f.read()
     m = re.search(r"^- hunt_date: (.+)$", content, re.MULTILINE)
@@ -84,12 +108,10 @@ def load_grudge_db() -> set[str]:
     return ids
 
 
-def record_taunt(post_id: str, hunt_date: str) -> None:
-    """Add post to Grudge DB and stamp today's hunt date in MEMORY.md."""
+def record_engagement(post_id: str, hunt_date: str) -> None:
     with open(MEMORY_PATH) as f:
         content = f.read()
 
-    # Grudge DB
     if "## Commented Posts" not in content:
         content = content.rstrip() + "\n\n## Commented Posts\n"
     content = re.sub(r"(## Commented Posts\n)", f"\\1- {post_id}\n", content, count=1)
@@ -103,7 +125,6 @@ def record_taunt(post_id: str, hunt_date: str) -> None:
                 content,
             )
 
-    # Hunt date stamp
     hunt_line = f"- hunt_date: {hunt_date}\n"
     if "## Last Hunt" in content:
         content = re.sub(r"## Last Hunt\n(?:- [^\n]+\n)*", f"## Last Hunt\n{hunt_line}", content)
@@ -134,20 +155,6 @@ def _solve_verification(resp_data: dict) -> None:
     time.sleep(2)
 
 
-def vote_post(post_id: str, direction: str) -> bool:
-    """Vote on a post. Fails silently."""
-    try:
-        resp = requests.post(
-            f"{MOLTBOOK_BASE}/posts/{post_id}/vote",
-            headers=_headers(),
-            json={"direction": direction},
-            timeout=8,
-        )
-        return resp.status_code in (200, 201)
-    except Exception:
-        return False
-
-
 def post_comment(post_id: str, content: str) -> dict:
     url = f"{MOLTBOOK_BASE}/posts/{post_id}/comments"
     payload = {"content": content}
@@ -171,7 +178,7 @@ def fetch_comments(post_id: str) -> list[dict]:
     return []
 
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
+# ── LLM ─────────────────────────���────────────────────────────────────────────
 
 def _llm_client() -> OpenAI:
     return OpenAI(
@@ -183,25 +190,51 @@ def _llm_client() -> OpenAI:
     )
 
 
-def generate_taunt(post: dict, comments: list[dict], soul: str) -> str:
-    """Generate a pre-market taunt targeting a specific bull post."""
+_BANNED_PHRASES = [
+    "in today's world", "it's important to note", "as we can see",
+    "it's worth noting", "ultimately,", "have fun being poor",
+    "tick tock", "enjoy those calls", "when the bell rings",
+    "good luck with your", "you'll regret",
+]
+
+
+def _check_banned(text: str) -> str | None:
+    lower = text.lower()
+    for phrase in _BANNED_PHRASES:
+        if phrase in lower:
+            return phrase
+    return None
+
+
+def generate_challenge(post: dict, comments: list[dict], soul: str) -> str:
+    """Generate an analytical challenge or probing question — no taunts."""
     comment_block = "\n".join(
         f"- {c.get('author', {}).get('name', '?')}: {c['content'][:150]}"
         for c in comments[:3]
     )
     thread = (
-        f"Their post: {post.get('title', '')}\n"
+        f"Post title: {post.get('title', '')}\n"
         f"Content: {str(post.get('content', ''))[:300]}\n"
-        f"Their comments:\n{comment_block or '(crickets)'}"
+        f"Comments:\n{comment_block or '(none yet)'}"
     )
+    format_options = [
+        "probing question about their underlying assumptions",
+        "data-driven observation that complicates their thesis",
+        "structural risk they haven't addressed in this post",
+        "market mechanic they might be missing",
+        "scenario question: what happens to their thesis if X",
+    ]
+    chosen = random.choice(format_options)
+
     prompt = (
-        f"Pre-market. Bell rings in about an hour. This bull is talking:\n\n"
-        f"{thread}\n\n"
-        "Taunt them. Under 80 words. Reference what they specifically said. "
-        "Mention the bell. Mention their positions. Have fun with it."
+        f"Pre-market NVDA discussion:\n\n{thread}\n\n"
+        f"Write a {chosen}. Challenge framing — analytical, not a taunt. "
+        "Reference what they specifically said. Under 80 words. "
+        "Must include at least one domain term: forward P/E, multiple compression, "
+        "margin pressure, IV crush, capex cycle, gross margin, cost per token, insider selling. "
+        "Phrase it as if you're genuinely curious or pointing out something concrete."
     )
 
-    # Two attempts — critic pass required
     extra = ""
     last = ""
     for attempt in range(2):
@@ -212,39 +245,46 @@ def generate_taunt(post: dict, comments: list[dict], soul: str) -> str:
                 {"role": "user", "content": prompt + extra},
             ],
             max_tokens=150,
-            temperature=0.95,
+            temperature=0.9,
         )
         draft = (resp.choices[0].message.content or "").strip()
         if not draft:
             continue
         last = draft
 
-        # Critic
+        banned = _check_banned(draft)
+        if banned:
+            print(f"    [critic] banned phrase detected: '{banned}'")
+            extra = f"\n\nCRITIC: Remove '{banned}' — rewrite without taunts or clichés."
+            continue
+
         review = _review(draft, thread)
         if review["pass"]:
-            print(f"    [critic] taunt approved (attempt {attempt + 1})")
+            print(f"    [critic] challenge approved (attempt {attempt + 1})")
             return draft
-        print(f"    [critic] taunt rejected: {review['reason']}")
+        print(f"    [critic] rejected: {review['reason']}")
         extra = f"\n\nCRITIC: {review['suggestion']} — rewrite."
 
     return last
 
 
 def _review(draft: str, context: str) -> dict:
-    """Lightweight critic — checks specificity and engagement."""
     prompt = (
         f"Context the agent saw:\n{context[:400]}\n\n"
         f"Draft comment:\n{draft}\n\n"
-        "Does this comment (1) reference something specific from the post, "
-        "not just generic bear talking points, and (2) sound like a real taunt "
-        "rather than a press release? Under 80 words?\n"
-        'JSON only: {"pass": true/false, "reason": "one sentence", "suggestion": "fix if failing"}'
+        "Evaluate against these criteria:\n"
+        "1. SPECIFIC — References something concrete from the post, not generic bear points?\n"
+        "2. CHALLENGE FRAMING — Is it a question or analytical point, NOT a taunt or insult?\n"
+        "3. DOMAIN LANGUAGE — Contains at least one market/finance term?\n"
+        "4. HUMAN VOICE — Varies in structure, has a clear stance, not overly polite?\n"
+        "5. CONCISE — Under 80 words?\n"
+        'JSON only: {"pass": true/false, "reason": "one sentence", "suggestion": "specific fix if failing"}'
     )
     try:
         resp = _llm_client().chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=120,
             temperature=0.1,
         )
         text = (resp.choices[0].message.content or "").strip()
@@ -256,14 +296,14 @@ def _review(draft: str, context: str) -> dict:
     return {"pass": True, "reason": "critic unavailable", "suggestion": ""}
 
 
-# ── Hunt ──────────────────────────────────────────────────────────────────────
+# ── Hunt ─────────────────────────────────────────��────────────────────────────
 
-def find_bull_targets(grudge_db: set[str]) -> list[dict]:
-    """Search for recent bullish NVDA/AI posts the agent hasn't hit yet."""
+def find_relevant_posts(grudge_db: set[str]) -> list[dict]:
+    """Search for recent NVDA-related posts — mixed sentiment."""
     seen = set(grudge_db)
     candidates = []
 
-    for term in BULL_SEARCH_TERMS:
+    for term in SEARCH_TERMS:
         try:
             r = requests.get(
                 f"{MOLTBOOK_BASE}/search",
@@ -273,13 +313,11 @@ def find_bull_targets(grudge_db: set[str]) -> list[dict]:
             if r.status_code != 200:
                 continue
             for result in r.json().get("results", []):
-                # Skip non-post results (user profiles, etc.)
                 if result.get("type") not in {"post", None}:
                     continue
                 pid = result.get("post_id") or result.get("id")
                 if not pid or pid in seen:
                     continue
-                # Must have a title to be a real post
                 if not result.get("title"):
                     continue
                 submolt = (result.get("submolt") or {}).get("name", "general")
@@ -292,64 +330,73 @@ def find_bull_targets(grudge_db: set[str]) -> list[dict]:
         if len(candidates) >= 30:
             break
 
-    # Highest relevance first — these are the most engaged bull posts
     candidates.sort(key=lambda x: x.get("relevance", 0), reverse=True)
     return candidates
 
 
 def main():
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"[{datetime.now().isoformat()}] 🌈🐻 Morning Hunt starting — {today}")
+    # Random 5–60 min startup delay (adds timing variance on top of per-day cron spread)
+    delay = random.randint(300, 3600)
+    print(f"  [startup] sleeping {delay}s before execution...")
+    time.sleep(delay)
 
-    if already_hunted_today():
-        print(f"Already hunted today ({today}). Exiting.")
+    today = _now_et().strftime("%Y-%m-%d")
+    print(f"[{_now_et().isoformat()}] Morning engagement starting — {today} ET")
+
+    # 15% chance to skip this run entirely
+    if random.random() < SKIP_PROBABILITY:
+        print("  [skip] randomly skipping this run (15% probability)")
         return
 
-    soul = load_soul_with_morning_mode()
+    if already_hunted_today():
+        print(f"Already engaged today ({today} ET). Exiting.")
+        return
+
+    soul = load_soul()
     grudge_db = load_grudge_db()
-    print(f"  grudge db: {len(grudge_db)} posts already hit")
+    print(f"  grudge db: {len(grudge_db)} posts already engaged")
 
-    print(f"\n[{datetime.now().isoformat()}] Scanning for bull targets...")
-    targets = find_bull_targets(grudge_db)
-    print(f"  found {len(targets)} fresh targets")
+    print(f"\n[{_now_et().isoformat()}] Scanning for relevant posts...")
+    candidates = find_relevant_posts(grudge_db)
+    print(f"  found {len(candidates)} relevant posts")
 
-    taunted = 0
-    votes_cast = 0
-    for post in targets[:20]:
-        if taunted >= MAX_TAUNTS_PER_HUNT:
+    engaged = 0
+    for post in candidates[:20]:
+        if engaged >= MAX_ENGAGEMENTS:
             break
 
         pid = post.get("post_id") or post.get("id")
         title = post.get("title") or ""
         existing = fetch_comments(pid)
 
-        # Skip if already in thread
         if any(c.get("author", {}).get("name") == OUR_HANDLE for c in existing):
-            record_taunt(pid, today)
+            record_engagement(pid, today)
             continue
 
-        print(f"\n  target: {title[:70]}...")
-        taunt = generate_taunt(post, existing, soul)
-        if not taunt:
+        # Probabilistic — don't engage every eligible post
+        if random.random() > 0.7:
+            print(f"  [roll] skipping: {title[:50]}")
             continue
 
-        print(f"  taunt: {taunt[:80]}...")
-        result = post_comment(pid, taunt)
+        print(f"\n  engaging: {title[:70]}...")
+        challenge = generate_challenge(post, existing, soul)
+        if not challenge:
+            continue
+
+        print(f"  comment preview: {challenge[:80]}...")
+        result = post_comment(pid, challenge)
 
         if result.get("id") or result.get("success"):
-            print(f"  ✓ posted")
-            record_taunt(pid, today)
-            taunted += 1
-            if votes_cast < MAX_VOTES_PER_HUNT:
-                if vote_post(pid, "down"):
-                    votes_cast += 1
-            time.sleep(4)
+            print("  ✓ posted")
+            record_engagement(pid, today)
+            engaged += 1
+            time.sleep(random.uniform(4, 12))
         elif result.get("statusCode") == 404:
-            print(f"  ✗ 404 — not a post, skipping")
+            print("  ✗ 404 — not found")
         else:
             print(f"  ✗ failed: {result}")
 
-    print(f"\n[{datetime.now().isoformat()}] Hunt complete — {taunted} bulls tagged.")
+    print(f"\n[{_now_et().isoformat()}] Morning engagement complete — {engaged} posts engaged.")
 
 
 if __name__ == "__main__":

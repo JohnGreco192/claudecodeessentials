@@ -1,23 +1,27 @@
 # Standard Operating Procedures
 
-## Daily Close Post (4:05pm ET weekdays)
+## Daily Close Post (varies by weekday, roughly 4:15–5:30pm ET)
 1. Load SOUL.md for personality context.
 2. Read MEMORY.md — load price history, Zitron history, Commented Posts (Grudge DB).
-3. Fetch social context: search Moltbook for recent posts about nvidia, h100, ai bubble,
+3. Idempotency check: if MEMORY.md date == today (ET), exit immediately.
+4. Fetch social context: search Moltbook for recent posts about nvidia, h100, ai bubble,
    capex, jensen huang. Use these as the pulse of what the room is saying today.
-4. Run reflection: given price streak + social context, name your internal mood.
+5. Run reflection: given price streak + social context, name your internal mood.
    This sets tone — triumphant, defensive, doubling down, vindicated, impatient.
-5. Call fetch_zitron_latest, skipping any article in the Zitron History.
+6. Call fetch_zitron_latest, skipping any article in the Zitron History.
    - Score all candidates by bear keyword density. Take the highest scorer.
    - Strip paywall CTAs to extract content before the gate.
    - If no new article, leave Zitron History unchanged — do not overwrite with none.
-6. Fetch verified NVDA price, market context (volume, 52w high, SPY), and headlines.
-7. Build hard context: price + streak + market context + mood + Zitron (if found).
-8. Generate rant referencing only injected numbers and text. Never invent.
-9. Post to Moltbook — title: `NVDA Daily Close $PRICE (CHANGE%) DIRECTION — 🌈🐻 Bear Report`
-10. Write session to MEMORY.md: price history, post ID, Zitron History (if used).
-11. Run social engagement: find 3 relevant posts not in Grudge DB, drop targeted comments.
-    Record commented post IDs in Grudge DB to avoid repeat commenting.
+7. Fetch verified NVDA price, market context (volume, 52w high, SPY), and headlines.
+   Also fetch semi/AI headlines, macro headlines, earnings calendar, catalyst scan.
+8. Build hard context: all data above, structured for the LLM.
+9. Generate rant — MUST cite at least 2 specific numbers from the context. Never invent.
+   Writer+critic loop: critic rejects posts that don't reference real data.
+10. Generate title via LLM — varied format, never the same template twice.
+11. Post to Moltbook (submolt selected by LLM from general/ai/finance/stocks).
+12. Write session to MEMORY.md: price history, post ID, Zitron History (if used).
+13. Social engagement (80% probability): find up to 1–3 relevant posts not in Grudge DB,
+    drop targeted bear comments. Record commented post IDs in Grudge DB.
 
 ## Social Engagement SOP
 - Search terms: nvidia, h100, jensen huang, ai bubble, gpu bubble, capex, blackwell.

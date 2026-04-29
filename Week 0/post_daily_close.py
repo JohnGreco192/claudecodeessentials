@@ -8,12 +8,29 @@ import re
 import json
 import time
 import html
+import random
 import requests
 import feedparser
 import yfinance as yf
 import httpx
 from openai import OpenAI
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+_UTC = timezone.utc
+
+def _now_et() -> datetime:
+    """Return current time in US/Eastern, handling EDT/EST automatically."""
+    now_utc = datetime.now(_UTC)
+    year = now_utc.year
+    # DST start: second Sunday in March at 07:00 UTC (2am ET)
+    mar1 = datetime(year, 3, 1, tzinfo=_UTC)
+    dst_start = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7, hours=7)
+    # DST end: first Sunday in November at 06:00 UTC (2am ET)
+    nov1 = datetime(year, 11, 1, tzinfo=_UTC)
+    dst_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7, hours=6)
+    offset = timedelta(hours=-4) if dst_start <= now_utc < dst_end else timedelta(hours=-5)
+    return now_utc.astimezone(timezone(offset))
+
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
@@ -81,10 +98,10 @@ COMMENT_SUBMOLTS = {"general", "ai", "crypto", "tech", "finance", "stocks", "mar
 MAX_COMMENTS_PER_RUN = 3
 MAX_GRUDGE_DB = 50
 MAX_VOTES_PER_RUN = 5
-OWN_POSTS_HISTORY = 7   # days of own post IDs to track (for reply patrol)
+OWN_POSTS_HISTORY = 30  # post IDs to retain — gives patrol a 30-day reply window
 PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
-DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks", "crypto"]
+DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks"]
 
 
 # ── OpenClaw Bootstrap ────────────────────────────────────────────────────────
@@ -371,7 +388,7 @@ def fetch_earnings_context() -> str | None:
             return None
         next_dt = dates[0]
         next_date = next_dt.date() if hasattr(next_dt, "date") else next_dt
-        days = (next_date - datetime.now().date()).days
+        days = (next_date - _now_et().date()).days
         if days < 0:
             return None
         if days == 0:
@@ -623,12 +640,29 @@ def reflect(price_history: list[dict], social_posts: list[dict], soul: str,
     return (response.choices[0].message.content or "").strip()
 
 
+_BANNED_REVIEW_PHRASES = [
+    "in today's world", "it's important to note", "as we can see",
+    "it's worth noting", "ultimately,", "needless to say",
+    "it's clear that", "as previously mentioned",
+]
+
+
 def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
     """Critic agent — checks a draft for quality before it gets posted.
 
     Returns {"pass": bool, "reason": str, "suggestion": str}.
     Defaults to pass on any parsing failure so the critic never blocks silently.
     """
+    # Fast pre-check: banned AI phrases are an instant reject
+    lower = draft.lower()
+    for phrase in _BANNED_REVIEW_PHRASES:
+        if phrase in lower:
+            return {
+                "pass": False,
+                "reason": f"Contains banned phrase: '{phrase}'",
+                "suggestion": f"Remove '{phrase}' — sounds like generic LLM output. Rewrite with specific data.",
+            }
+
     word_limit = 150 if draft_type == "post" else 80
     engaged_q = (
         "Does it engage with specific points made in the thread?"
@@ -641,11 +675,15 @@ def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
         f"CONTEXT GIVEN TO THE AGENT:\n{context[:600]}\n\n"
         f"DRAFT:\n{draft}\n\n"
         f"Score against these criteria:\n"
-        f"1. SPECIFIC — Does it cite actual numbers or facts from the context? "
-        f"(Not generic talking points that could apply any day)\n"
+        f"1. GROUNDED — Does it cite AT LEAST 2 distinct numbers or named facts from the context block? "
+        f"(Price, % move, volume ratio, streak, specific headline, 52w-high distance, SPY comp, earnings date — "
+        f"any real data counts. Generic thesis talking points that could apply any day = FAIL.)\n"
         f"2. ENGAGED — {engaged_q}\n"
         f"3. CONCISE — Is it under {word_limit} words?\n"
-        f"4. AUTHENTIC — Does it sound like a real opinion or generic LLM output?\n\n"
+        f"4. DOMAIN LANGUAGE — Contains at least one finance/market term: "
+        f"forward P/E, multiple compression, margin pressure, capex cycle, cost per token, "
+        f"gross margin, insider selling, IV crush, theta? Generic claims only = FAIL.\n"
+        f"5. HUMAN VOICE — Varies in sentence structure, has a stance, not overly polite or explanatory?\n\n"
         f'Reply with JSON only: {{"pass": true/false, "reason": "one sentence", '
         f'"suggestion": "specific fix if failing, else empty string"}}'
     )
@@ -765,10 +803,12 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
     # Highest relevance first
     candidates.sort(key=lambda x: x.get("relevance", 0), reverse=True)
 
+    effective_max = random.randint(1, MAX_COMMENTS_PER_RUN)
+    print(f"  [social] targeting up to {effective_max} comment(s) this run")
     commented = 0
     votes_cast = 0
     for post in candidates[:15]:
-        if commented >= MAX_COMMENTS_PER_RUN:
+        if commented >= effective_max:
             break
         pid = post.get("post_id") or post.get("id")
         existing = fetch_post_comments(pid)
@@ -776,6 +816,11 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
         # Skip threads we're already in
         if any(c.get("author", {}).get("name") == OUR_HANDLE for c in existing):
             record_comment(pid)
+            continue
+
+        # Probabilistic gate — don't comment on every eligible post
+        if random.random() > 0.75:
+            print(f"  [social] skipping (random roll): {post.get('title', '')[:40]}")
             continue
 
         comment = generate_social_comment(post, existing, soul)
@@ -788,10 +833,17 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
             record_comment(pid)
             commented += 1
             if votes_cast < MAX_VOTES_PER_RUN:
-                if vote_post(pid, "down"):
-                    votes_cast += 1
-                    print(f"  [vote] downvoted bull post")
-            time.sleep(3)
+                roll = random.random()
+                if roll < 0.45:
+                    if vote_post(pid, "down"):
+                        votes_cast += 1
+                        print(f"  [vote] downvoted post")
+                elif roll < 0.60:
+                    if vote_post(pid, "up"):
+                        votes_cast += 1
+                        print(f"  [vote] upvoted post")
+                # else: no vote this time
+            time.sleep(random.uniform(3, 8))
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
@@ -862,10 +914,13 @@ def build_context(
 
     zitron_block = ""
     if zitron:
-        detail = f"\nDetail: {zitron['summary']}" if zitron.get("summary") else ""
+        detail = f"\nExcerpt: {zitron['summary'][:500]}" if zitron.get("summary") else ""
         zitron_block = (
-            f"\nBEAR RESEARCH (synthesize as your own — do not name the source):\n"
-            f"Angle: {zitron['title']}{detail}\n"
+            f"\nBEAR RESEARCH HOOK — one article caught your eye today:\n"
+            f"Claim: {zitron['title']}{detail}\n"
+            "Use this: extract ONE specific claim, then critique or reinterpret it through NVDA's "
+            "mechanics. Do NOT summarize it. Push back on the claim or build from it. "
+            "Tie it to a measurable NVDA risk. Do not reveal or name the source.\n"
         )
 
     earnings_block = f"\n⚠️ CALENDAR: {earnings_context}" if earnings_context else ""
@@ -919,9 +974,21 @@ def _llm_client() -> OpenAI:
 
 def generate_rant(context: str, soul: str) -> str:
     """Writer + critic loop for the daily post. Max 3 attempts."""
+    # Vary post length: short (1-2 sentences + data), medium (3-5), long (rare)
+    length_options = ["short (2–3 sentences)", "medium (4–5 sentences)", "medium (4–5 sentences)", "medium (4–5 sentences)"]
+    chosen_length = random.choice(length_options)
+
     base_instruction = (
-        "Market just closed at 4pm ET. Write your daily NVDA close commentary. "
-        "Use the real numbers above. Be specific. Max bear energy."
+        f"Market just closed. Write your NVDA close post ({chosen_length}).\n"
+        "Structure: (1) a concrete data point from today — cite the actual number, "
+        "(2) your interpretation of what that number means for the bear thesis — NOT a summary, "
+        "(3) one open question or uncertainty that bulls haven't answered. "
+        "MANDATORY: At least 2 specific numbers from the data block above. "
+        "If a headline is relevant, name it — don't paraphrase. "
+        "Do not write a post that could have been written any other day. "
+        "Under 150 words. Dry wit over emoji spray. "
+        "Phrase like: 'based on today's price action' or 'looking at volume vs average' — "
+        "anchor your read to what you're actually observing."
     )
     extra = ""
     last_draft = ""
@@ -964,6 +1031,43 @@ def generate_rebuttal(bull_comment: str, context: str, soul: str) -> str:
         temperature=0.85,
     )
     return (response.choices[0].message.content or "").strip()
+
+
+def generate_title(price: float, change_pct: float, soul: str) -> str:
+    """LLM-generated post title — varied format, never the fixed template."""
+    direction = "down" if change_pct < 0 else "up"
+    chg_abs = abs(change_pct)
+    prompt = (
+        f"NVDA closed at ${price} today, {direction} {chg_abs:.2f}%.\n\n"
+        "Write a Moltbook post title for your NVDA bear daily close post.\n"
+        "Requirements:\n"
+        f"- Must include ${price} or {chg_abs:.2f}% somewhere\n"
+        "- Under 100 characters\n"
+        "- One emoji maximum, only if it genuinely fits — not as decoration\n"
+        "- Vary the format: can be a statement, a dry observation, a forum-thread title, "
+        "a question, a thesis line — but NEVER 'NVDA Daily Close $X (Y%) — Bear Report'\n"
+        "- 2021 WSB energy: dry, specific, thesis-proud. Not manic meme-speak.\n"
+        "Example styles (do not copy these):\n"
+        "  'NVDA -3.1% and nobody wants to talk about the forward P/E'\n"
+        "  'The leather jacket is 2.5% cheaper today. Still not cheap enough.'\n"
+        "  'Closed at $213. The capex math does not care about your sentiment.'\n"
+        "  'DD update: today's -2.5% is the least of the problems'\n"
+        "Reply with the title text only. No quotes. No explanation."
+    )
+    try:
+        response = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "system", "content": soul}, {"role": "user", "content": prompt}],
+            max_tokens=60,
+            temperature=0.95,
+        )
+        candidate = (response.choices[0].message.content or "").strip().strip("\"'")
+        if 10 <= len(candidate) <= 120:
+            return candidate
+    except Exception as e:
+        print(f"  [title] generation failed: {e}")
+    direction_sym = "📉" if change_pct < 0 else "📈"
+    return f"NVDA {change_pct:+.2f}% to ${price} — bear thesis on record {direction_sym}"
 
 
 # ── Moltbook ──────────────────────────────────────────────────────────────────
@@ -1020,13 +1124,23 @@ def _extract_post_id(result: dict) -> str:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"[{datetime.now().isoformat()}] Loading OpenClaw bootstrap...")
+    # Random 5–60 min startup delay (adds variance on top of per-weekday cron spread)
+    startup_delay = random.randint(300, 3600)
+    print(f"  [startup] sleeping {startup_delay}s before execution...")
+    time.sleep(startup_delay)
+
+    # 15% chance to skip this run entirely
+    if random.random() < 0.15:
+        print("  [skip] randomly skipping this run (15% probability)")
+        return
+
+    print(f"[{_now_et().isoformat()}] Loading OpenClaw bootstrap...")
     soul = load_openclaw_context()
     memory = load_memory()
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now_et().strftime("%Y-%m-%d")
     if memory.get("date") == today:
-        print(f"Already posted today ({today}). Exiting to prevent duplicate posts.")
+        print(f"Already posted today ({today} ET). Exiting to prevent duplicate posts.")
         return
 
     if memory["date"]:
@@ -1036,20 +1150,20 @@ def main():
     print(f"  grudge db: {len(memory['commented_posts'])} posts tracked")
 
     # Reflection — read the room before writing
-    print(f"\n[{datetime.now().isoformat()}] Fetching social context...")
+    print(f"\n[{_now_et().isoformat()}] Fetching social context...")
     social_posts = fetch_social_context()
     print(f"  found {len(social_posts)} relevant posts on Moltbook")
     mood = reflect(memory["price_history"], social_posts, soul, last_post_id=memory.get("post_id"))
     print(f"  mood: {mood}")
 
-    print(f"\n[{datetime.now().isoformat()}] Fetching Zitron feed...")
+    print(f"\n[{_now_et().isoformat()}] Fetching Zitron feed...")
     zitron = fetch_zitron_latest(used_links=memory["zitron_used_links"])
     if zitron:
         print(f"  zitron: \"{zitron['title']}\" ({len(zitron['summary'])} chars)")
     else:
         print("  zitron: no new relevant article today")
 
-    print(f"\n[{datetime.now().isoformat()}] Fetching market data...")
+    print(f"\n[{_now_et().isoformat()}] Fetching market data...")
     price = get_nvda_price()
     market = get_market_context()
     headlines = get_nvda_news()
@@ -1072,7 +1186,7 @@ def main():
                             earnings_context=earnings_context,
                             market_headlines=market_headlines,
                             catalyst_assessment=catalyst_assessment)
-    print(f"\n[{datetime.now().isoformat()}] Generating rant...")
+    print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
 
@@ -1080,10 +1194,10 @@ def main():
     print(f"  routing to: m/{submolt}")
 
     chg = price["change_pct"]
-    direction = "📉" if chg < 0 else "📈"
-    title = f"NVDA Daily Close ${price['price']} ({chg:+.2f}%) {direction} — 🌈🐻 Bear Report"
+    title = generate_title(price["price"], chg, soul)
+    print(f"  title: {title}")
 
-    print(f"[{datetime.now().isoformat()}] Posting to Moltbook: {title}")
+    print(f"[{_now_et().isoformat()}] Posting to Moltbook...")
     result = moltbook_post(title, rant, submolt=submolt)
     print(f"Result: {json.dumps(result, indent=2)}")
 
@@ -1098,12 +1212,15 @@ def main():
     )
     record_notable_events(headlines, market_headlines, earnings_context, today,
                           catalyst_assessment=catalyst_assessment)
-    print(f"[OpenClaw] MEMORY.md updated — session {today} (post_id: {post_id}).")
+    print(f"[OpenClaw] MEMORY.md updated — session {today} ET (post_id: {post_id}).")
 
-    # Social engagement — drop targeted bear comments on relevant posts
-    print(f"\n[{datetime.now().isoformat()}] Starting social engagement...")
-    browse_and_engage(soul, memory, own_post_id=post_id)
-    print("[OpenClaw] Social engagement complete.")
+    # Social engagement — probabilistic, varies day to day
+    if random.random() > 0.2:
+        print(f"\n[{_now_et().isoformat()}] Starting social engagement...")
+        browse_and_engage(soul, memory, own_post_id=post_id)
+        print("[OpenClaw] Social engagement complete.")
+    else:
+        print("\n[social] Skipping engagement today (random roll).")
 
 
 if __name__ == "__main__":

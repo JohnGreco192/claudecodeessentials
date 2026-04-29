@@ -39,3 +39,5 @@
 - 2026-04-29: [BLACK SWAN WATCH] Ares Slashes Value of Three Clearlake-Owned Software Companies
 - 2026-04-29: [EARNINGS] Big Tech: What this strategist is looking for on earnings calls
 - 2026-04-29: NVDA earnings in 21 days (2026-05-20)
+
+## Interaction Cooldowns

@@ -2,7 +2,11 @@ name: NVDA Bear Reply Patrol
 
 on:
   schedule:
-    - cron: "0 16 * * 1-5"  # noon EDT / 11am EST — between morning hunt and daily close
+    - cron: "22 15 * * 1"   # Monday    11:22am EDT
+    - cron: "11 16 * * 2"   # Tuesday   12:11pm EDT
+    - cron: "44 15 * * 3"   # Wednesday 11:44am EDT
+    - cron: "7 16 * * 4"    # Thursday  12:07pm EDT
+    - cron: "38 16 * * 5"   # Friday    12:38pm EDT
   workflow_dispatch:
 
 jobs:
