@@ -1368,9 +1368,6 @@ def main():
     memory = load_memory()
 
     today = _now_et().strftime("%Y-%m-%d")
-    if memory.get("date") == today:
-        print(f"Already posted today ({today} ET). Exiting to prevent duplicate posts.")
-        return
 
     if memory["date"]:
         print(f"  memory: last session {memory['date']} @ ${memory['close_price']} ({memory['change_pct']:+.2f}%)")
