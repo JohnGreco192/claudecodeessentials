@@ -391,7 +391,7 @@ def fetch_zitron_latest(used_links: set[str]) -> dict | None:
         if score == 0:
             continue
         clean_title = re.sub(r"^(Premium|News|Exclusive):\s*", "", title, flags=re.IGNORECASE)
-        candidates.append({"title": clean_title, "summary": summary[:800], "link": link, "score": score})
+        candidates.append({"title": clean_title, "summary": summary[:3000], "link": link, "score": score})
 
     if not candidates:
         return None
@@ -1034,7 +1034,7 @@ def build_context(
 
     zitron_block = ""
     if zitron:
-        detail = f"\nExcerpt: {zitron['summary'][:500]}" if zitron.get("summary") else ""
+        detail = f"\nExcerpt: {zitron['summary'][:2500]}" if zitron.get("summary") else ""
         zitron_block = (
             f"\nBEAR RESEARCH HOOK — one article caught your eye today:\n"
             f"Claim: {zitron['title']}{detail}\n"
