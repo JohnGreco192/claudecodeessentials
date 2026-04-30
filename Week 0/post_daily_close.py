@@ -1264,27 +1264,65 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
 
-def _solve_verification(resp_data: dict) -> None:
-    vc = resp_data.get("verification_code", "")
-    challenge = resp_data.get("challenge", "")
-    expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge)
+def _solve_verification(verification: dict) -> None:
+    vc = verification.get("verification_code", "")
+    challenge = verification.get("challenge_text") or verification.get("challenge", "")
+    if not vc or not challenge:
+        print("  [verify] missing code or challenge — skipping")
+        return
+
+    answer: str | None = None
+
+    # Try simple arithmetic first (strips obfuscation chars, evals the expression)
+    expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge).strip()
     try:
-        answer = str(round(float(eval(expr)), 2))  # noqa: S307
+        val = float(eval(expr))  # noqa: S307
+        if expr:
+            answer = f"{val:.2f}"
     except Exception:
-        answer = "0"
-    print(f"  verification: '{challenge}' → {answer}")
-    requests.post(f"{MOLTBOOK_BASE}/verify", headers=_headers(),
-                  json={"verification_code": vc, "answer": answer}, timeout=10)
+        pass
+
+    # Fall back to LLM for obfuscated word problems
+    if not answer or answer == "0.00":
+        try:
+            resp = _llm_client().chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": (
+                    "Solve this math challenge. The text may be obfuscated with random "
+                    "punctuation and mixed case — read through it phonetically. "
+                    "Return ONLY the final number with exactly 2 decimal places (e.g. '57.00').\n\n"
+                    f"Challenge: {challenge}"
+                )}],
+                max_tokens=20,
+                temperature=0,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            m = re.search(r"\d+(?:\.\d+)?", text)
+            if m:
+                answer = f"{float(m.group()):.2f}"
+        except Exception as e:
+            print(f"  [verify] LLM solve failed: {e}")
+
+    print(f"  [verify] challenge: '{challenge[:80]}' → {answer}")
+    try:
+        r = requests.post(
+            f"{MOLTBOOK_BASE}/verify", headers=_headers(),
+            json={"verification_code": vc, "answer": answer}, timeout=10,
+        )
+        print(f"  [verify] status: {r.status_code} {r.text[:120]}")
+    except Exception as e:
+        print(f"  [verify] submit failed: {e}")
     time.sleep(2)
 
 
 def _post_with_verification(url: str, payload: dict) -> dict:
     resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
     data = resp.json()
-    if data.get("verification_required"):
-        _solve_verification(data)
-        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
-        data = resp.json()
+    # Challenge lives inside data["post"]["verification"] or data["verification"]
+    post_obj = data.get("post", data)
+    verification = post_obj.get("verification") or data.get("verification")
+    if verification:
+        _solve_verification(verification)
     return data
 
 
