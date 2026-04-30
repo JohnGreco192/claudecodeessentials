@@ -854,7 +854,7 @@ def generate_social_comment(post: dict, top_comments: list[dict], soul: str) -> 
         for c in top_comments[:3]
     )
     thread_context = (
-        f"Post title: {post.get('title', '')}\n"
+        f"Post title: {(post.get('title') or '')}\n"
         f"Post content: {str(post.get('content', ''))[:400]}\n"
         f"Top comments:\n{comment_block or '(none yet)'}"
     )
@@ -939,7 +939,7 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
 
         # Probabilistic gate — don't comment on every eligible post
         if random.random() > 0.75:
-            print(f"  [social] skipping (random roll): {post.get('title', '')[:40]}")
+            print(f"  [social] skipping (random roll): {(post.get('title') or '')[:40]}")
             continue
 
         comment = generate_social_comment(post, existing, soul)
@@ -948,7 +948,7 @@ def browse_and_engage(soul: str, memory: dict, own_post_id: str = "") -> None:
 
         result = moltbook_comment(pid, comment)
         if result.get("id") or result.get("success"):
-            print(f"  [social] commented on: {post.get('title', '')[:60]}...")
+            print(f"  [social] commented on: {(post.get('title') or '')[:60]}...")
             record_comment(pid)
             commented += 1
             if votes_cast < MAX_VOTES_PER_RUN:
@@ -1284,14 +1284,16 @@ def _solve_verification(verification: dict) -> None:
 
     # Fall back to LLM for obfuscated word problems
     if not answer or answer == "0.00":
+        # Strip punctuation/symbols, keep letters+digits+spaces so the model can read phonetically
+        readable = re.sub(r"[^a-zA-Z0-9\s]", " ", challenge).strip()
         try:
             resp = _llm_client().chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": (
-                    "Solve this math challenge. The text may be obfuscated with random "
-                    "punctuation and mixed case — read through it phonetically. "
-                    "Return ONLY the final number with exactly 2 decimal places (e.g. '57.00').\n\n"
-                    f"Challenge: {challenge}"
+                    "Solve this math word problem. The text uses mixed case but the words are real — "
+                    "read it normally. Reply with ONLY the numeric answer, 2 decimal places, nothing else. "
+                    "Example reply: '65.00'\n\n"
+                    f"Problem: {readable}"
                 )}],
                 max_tokens=20,
                 temperature=0,
@@ -1303,6 +1305,8 @@ def _solve_verification(verification: dict) -> None:
         except Exception as e:
             print(f"  [verify] LLM solve failed: {e}")
 
+    # Always send a string — never None
+    answer = answer or "0.00"
     print(f"  [verify] challenge: '{challenge[:80]}' → {answer}")
     try:
         r = requests.post(
