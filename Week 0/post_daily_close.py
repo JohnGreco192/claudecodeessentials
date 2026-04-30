@@ -101,6 +101,8 @@ MAX_VOTES_PER_RUN = 5
 OWN_POSTS_HISTORY = 30  # post IDs to retain — gives patrol a 30-day reply window
 PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
+ARGUMENT_LOG_SIZE = 10  # deployed arguments to remember (prevents repetition)
+CALL_TRACKER_SIZE = 20  # directional calls with outcomes (public accountability)
 DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks"]
 
 
@@ -174,6 +176,39 @@ def load_memory() -> dict:
             if m:
                 own_posts.append(m.group(1).strip())
 
+    # Argument log — deployed arguments, most recent first
+    argument_log: list[str] = []
+    al = re.search(r"## Argument Log\n((?:- .+\n?)*)", content)
+    if al:
+        for line in al.group(1).strip().splitlines():
+            entry = re.sub(r"^- \d{4}-\d{2}-\d{2} \| ", "", line.strip())
+            if entry:
+                argument_log.append(entry)
+
+    # Running thesis — evolves across sessions
+    running_thesis = ""
+    rt = re.search(r"## Running Thesis\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if rt:
+        candidate = rt.group(1).strip()
+        if candidate and candidate != "(not yet developed)":
+            running_thesis = candidate
+
+    # Call tracker — directional calls with outcomes
+    call_tracker: list[dict] = []
+    ct = re.search(r"## Call Tracker\n((?:- .+\n?)*)", content)
+    if ct:
+        for line in ct.group(1).strip().splitlines():
+            m = re.match(
+                r"- (\d{4}-\d{2}-\d{2}) \| called: (UP|DOWN) \| actual: (UP|DOWN) \(([+-][\d.]+)%\) \| (.+)",
+                line.strip(),
+            )
+            if m:
+                call_tracker.append({
+                    "date": m.group(1), "called": m.group(2),
+                    "actual": m.group(3), "actual_pct": float(m.group(4)),
+                    "outcome": m.group(5).strip(),
+                })
+
     price_str = _val("close_price")
     chg_str = _val("change_pct")
     return {
@@ -185,6 +220,9 @@ def load_memory() -> dict:
         "zitron_used_links": zitron_used_links,
         "commented_posts": commented_posts,
         "own_posts": own_posts,
+        "argument_log": argument_log,
+        "running_thesis": running_thesis,
+        "call_tracker": call_tracker,
     }
 
 
@@ -195,6 +233,8 @@ def save_memory(
     post_id: str,
     price_history: list[dict],
     zitron: dict | None = None,
+    argument: str | None = None,
+    running_thesis: str | None = None,
 ) -> None:
     with open(MEMORY_PATH) as f:
         content = f.read()
@@ -247,6 +287,47 @@ def save_memory(
                 content = re.sub(r"## Last Zitron Article\n(?:- [^\n]+\n)*", new_zh, content)
             else:
                 content = content.rstrip() + f"\n\n{new_zh}"
+
+    # Call tracker — always record today's bear call vs. actual move
+    bear_called = "DOWN"
+    actual = "DOWN" if change_pct < 0 else "UP"
+    if change_pct < -1:
+        outcome = "✓ right"
+    elif change_pct > 1:
+        outcome = "✗ wrong"
+    else:
+        outcome = "~ neutral"
+    new_call = f"- {date} | called: {bear_called} | actual: {actual} ({change_pct:+.2f}%) | {outcome}\n"
+    ct_match = re.search(r"## Call Tracker\n((?:- .+\n?)*)", content)
+    if ct_match:
+        existing = ct_match.group(1).strip().splitlines(keepends=True)
+        new_lines = ([new_call] + existing)[:CALL_TRACKER_SIZE]
+        content = re.sub(r"## Call Tracker\n(?:- .+\n?)*",
+                         "## Call Tracker\n" + "".join(new_lines), content)
+    else:
+        content = content.rstrip() + f"\n\n## Call Tracker\n{new_call}"
+
+    # Argument log — what was argued today, for deduplication tomorrow
+    if argument:
+        new_arg = f"- {date} | {argument}\n"
+        al_match = re.search(r"## Argument Log\n((?:- .+\n?)*)", content)
+        if al_match:
+            existing = al_match.group(1).strip().splitlines(keepends=True)
+            new_lines = ([new_arg] + existing)[:ARGUMENT_LOG_SIZE]
+            content = re.sub(r"## Argument Log\n(?:- .+\n?)*",
+                             "## Argument Log\n" + "".join(new_lines), content)
+        else:
+            content = content.rstrip() + f"\n\n## Argument Log\n{new_arg}"
+
+    # Running thesis — evolving synthesis, written by the LLM each session
+    if running_thesis:
+        new_rt = f"## Running Thesis\n{running_thesis}\n"
+        if "## Running Thesis" in content:
+            content = re.sub(
+                r"## Running Thesis\n.*?(?=\n## |\Z)", new_rt.rstrip(), content, flags=re.DOTALL
+            )
+        else:
+            content = content.rstrip() + f"\n\n{new_rt}"
 
     with open(MEMORY_PATH, "w") as f:
         f.write(content)
@@ -604,40 +685,78 @@ def fetch_post_comments(post_id: str) -> list[dict]:
     return []
 
 
-def reflect(price_history: list[dict], social_posts: list[dict], soul: str,
-            last_post_id: str | None = None) -> str:
-    """One-sentence internal mood check — informs today's rant tone."""
+def reflect_and_plan(
+    price_history: list[dict],
+    social_posts: list[dict],
+    soul: str,
+    argument_log: list[str] | None = None,
+    running_thesis: str = "",
+    call_tracker: list[dict] | None = None,
+    last_post_id: str | None = None,
+) -> dict:
+    """Plan today's post: what's the new angle, tone, and any past call to reference.
+
+    Returns {"new_angle": str, "tone": str, "reference_past": str | None}
+    """
     streak = _streak(price_history) if price_history else "no history"
     titles = "\n".join(f"- {p['title'][:80]}" for p in social_posts[:5] if p.get("title"))
+
+    # Last call outcome from price history (bear always calls DOWN)
+    last_call_line = ""
+    if price_history:
+        last = price_history[0]
+        direction = "DOWN" if last["change_pct"] < 0 else "UP"
+        if last["change_pct"] < -1:
+            last_call_line = f"Last session: called DOWN — NVDA went {direction} {last['change_pct']:+.2f}%. Bear was right. ✓"
+        elif last["change_pct"] > 1:
+            last_call_line = f"Last session: called DOWN — NVDA went {direction} {last['change_pct']:+.2f}%. Wrong (or early). ✗"
+        else:
+            last_call_line = f"Last session: called DOWN — NVDA moved {last['change_pct']:+.2f}%. Neutral."
 
     score_line = ""
     if last_post_id and last_post_id != "unknown":
         score = fetch_post_score(last_post_id)
         if score is not None:
             if score >= 10:
-                score_line = f"\nYour last post is gaining traction ({score} upvotes)."
+                score_line = f"Last post: {score} upvotes — gaining traction."
             elif score == 0:
-                score_line = "\nYour last post got zero engagement — bulls are ignoring you."
+                score_line = f"Last post: {score} upvotes — bulls ignoring you."
             else:
-                score_line = f"\nYour last post has {score} upvotes."
+                score_line = f"Last post: {score} upvotes — building slowly."
+
+    arg_block = ""
+    if argument_log:
+        arg_lines = "\n".join(f"- {a}" for a in argument_log[:7])
+        arg_block = f"\nARGUMENTS ALREADY DEPLOYED THIS WEEK (do not repeat these):\n{arg_lines}"
 
     prompt = (
-        f"Price trend: {streak}{score_line}\n"
-        f"What Moltbook is talking about right now:\n{titles or '(nothing relevant found)'}\n\n"
-        "In one sentence — what is your internal state going into today's post? "
-        "Triumphant? Defensive? Doubling down through pain? Vindicated? "
-        "Don't post this, just name the mood."
+        f"PRICE STREAK: {streak}\n"
+        f"{last_call_line}\n"
+        f"{score_line}\n"
+        f"RUNNING THESIS: {running_thesis or '(not yet developed)'}"
+        f"{arg_block}\n\n"
+        f"WHAT MOLTBOOK IS TALKING ABOUT:\n{titles or '(nothing relevant found)'}\n\n"
+        "Plan today's post. Return JSON:\n"
+        '{\n'
+        '  "new_angle": "the specific aspect to explore today — must be different from recent arguments",\n'
+        '  "tone": "one of: triumphant|doubling_down|patient|vindicated|defensive",\n'
+        '  "reference_past": "a concrete past call or observation to weave in (e.g. \'I flagged X last week — today confirms it\'), or null"\n'
+        '}'
     )
-    response = _llm_client().chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": soul},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=60,
-        temperature=0.8,
-    )
-    return (response.choices[0].message.content or "").strip()
+    try:
+        response = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "system", "content": soul}, {"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.75,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+    except Exception as e:
+        print(f"  [reflect] failed: {e}")
+    return {"new_angle": "", "tone": "patient", "reference_past": None}
 
 
 _BANNED_REVIEW_PHRASES = [
@@ -878,6 +997,7 @@ def build_context(
     earnings_context: str | None = None,
     market_headlines: list[str] | None = None,
     catalyst_assessment: dict | None = None,
+    plan: dict | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -945,6 +1065,24 @@ def build_context(
         if parts:
             catalyst_block = "\nMACRO CATALYST SCAN:\n" + "\n".join(f"- {p}" for p in parts)
 
+    plan_block = ""
+    if plan:
+        angle = plan.get("new_angle", "")
+        tone = plan.get("tone", "")
+        ref = plan.get("reference_past")
+        running_thesis = memory.get("running_thesis", "")
+        parts = []
+        if angle:
+            parts.append(f"TODAY'S ANGLE: {angle}")
+        if tone:
+            parts.append(f"TONE: {tone}")
+        if ref:
+            parts.append(f"WEAVE IN: {ref}")
+        if running_thesis:
+            parts.append(f"YOUR RUNNING THESIS (build on this): {running_thesis}")
+        if parts:
+            plan_block = "\nPOSTING PLAN (follow this):\n" + "\n".join(f"- {p}" for p in parts)
+
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
@@ -957,6 +1095,7 @@ def build_context(
         f"{broad_block}"
         f"{catalyst_block}"
         f"{zitron_block}"
+        f"{plan_block}"
     )
 
 
@@ -1014,6 +1153,55 @@ def generate_rant(context: str, soul: str) -> str:
         print(f"  [critic] post rejected (attempt {attempt + 1}): {review['reason']}")
         extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite addressing this."
     return last_draft
+
+
+def extract_argument(rant: str) -> str:
+    """Distill the core bear argument from today's post into ~15 words for the Argument Log."""
+    prompt = (
+        f"Post:\n{rant}\n\n"
+        "Distill the single core bear argument in 10-15 words — the specific claim, not the theme. "
+        "Example: 'Capex slowdown signal: volume 40% above avg on -2.5% day' "
+        "or 'AMD MI300X parity erodes NVDA pricing power by Q3'. "
+        "Return the distilled argument only. No preamble."
+    )
+    try:
+        resp = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=40,
+            temperature=0.2,
+        )
+        text = (resp.choices[0].message.content or "").strip().strip("\"'")
+        if text and len(text) > 5:
+            return text
+    except Exception as e:
+        print(f"  [extract_argument] failed: {e}")
+    return ""
+
+
+def update_running_thesis(rant: str, context: str, current_thesis: str) -> str:
+    """Evolve the running thesis based on today's post and market data. 2-3 sentences."""
+    prompt = (
+        f"CURRENT THESIS:\n{current_thesis or '(not yet developed)'}\n\n"
+        f"TODAY'S POST:\n{rant}\n\n"
+        f"MARKET CONTEXT:\n{context[:400]}\n\n"
+        "Update the running thesis to incorporate today's data point and argument. "
+        "2-3 sentences max. The thesis should evolve — not repeat the same claim. "
+        "Write it in first person as the bear account. Be specific. No preamble."
+    )
+    try:
+        resp = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            temperature=0.5,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if text and len(text) > 20:
+            return text
+    except Exception as e:
+        print(f"  [update_thesis] failed: {e}")
+    return current_thesis
 
 
 def generate_rebuttal(bull_comment: str, context: str, soul: str) -> str:
@@ -1149,12 +1337,23 @@ def main():
         print(f"  streak: {_streak(memory['price_history'])}")
     print(f"  grudge db: {len(memory['commented_posts'])} posts tracked")
 
-    # Reflection — read the room before writing
+    # Reflection — read the room and plan the angle before writing
     print(f"\n[{_now_et().isoformat()}] Fetching social context...")
     social_posts = fetch_social_context()
     print(f"  found {len(social_posts)} relevant posts on Moltbook")
-    mood = reflect(memory["price_history"], social_posts, soul, last_post_id=memory.get("post_id"))
-    print(f"  mood: {mood}")
+    plan = reflect_and_plan(
+        price_history=memory["price_history"],
+        social_posts=social_posts,
+        soul=soul,
+        argument_log=memory.get("argument_log"),
+        running_thesis=memory.get("running_thesis", ""),
+        call_tracker=memory.get("call_tracker"),
+        last_post_id=memory.get("post_id"),
+    )
+    print(f"  angle: {plan.get('new_angle', '(none)')[:80]}")
+    print(f"  tone: {plan.get('tone', 'patient')}")
+    if plan.get("reference_past"):
+        print(f"  reference: {plan['reference_past'][:60]}")
 
     print(f"\n[{_now_et().isoformat()}] Fetching Zitron feed...")
     zitron = fetch_zitron_latest(used_links=memory["zitron_used_links"])
@@ -1182,10 +1381,11 @@ def main():
     if catalyst_assessment.get("black_swan_watch"):
         print(f"  ⚠️ black swan watch: {catalyst_assessment['black_swan_watch']}")
 
-    context = build_context(price, headlines, memory, market, mood, zitron,
+    context = build_context(price, headlines, memory, market, plan.get("tone", ""), zitron,
                             earnings_context=earnings_context,
                             market_headlines=market_headlines,
-                            catalyst_assessment=catalyst_assessment)
+                            catalyst_assessment=catalyst_assessment,
+                            plan=plan)
     print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
@@ -1202,6 +1402,17 @@ def main():
     print(f"Result: {json.dumps(result, indent=2)}")
 
     post_id = _extract_post_id(result)
+
+    print(f"\n[{_now_et().isoformat()}] Extracting argument for log...")
+    argument = extract_argument(rant)
+    if argument:
+        print(f"  argument: {argument}")
+
+    print(f"  updating running thesis...")
+    new_thesis = update_running_thesis(rant, context, memory.get("running_thesis", ""))
+    if new_thesis and new_thesis != memory.get("running_thesis", ""):
+        print(f"  thesis evolved: {new_thesis[:80]}...")
+
     save_memory(
         date=today,
         price=price["price"],
@@ -1209,6 +1420,8 @@ def main():
         post_id=post_id,
         price_history=memory["price_history"],
         zitron=zitron,
+        argument=argument or None,
+        running_thesis=new_thesis or None,
     )
     record_notable_events(headlines, market_headlines, earnings_context, today,
                           catalyst_assessment=catalyst_assessment)
