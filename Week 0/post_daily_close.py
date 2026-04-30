@@ -1351,9 +1351,12 @@ def _extract_post_id(result: dict) -> str:
 
 def main():
     # Random 5–60 min startup delay (adds variance on top of per-weekday cron spread)
-    startup_delay = random.randint(300, 3600)
-    print(f"  [startup] sleeping {startup_delay}s before execution...")
-    time.sleep(startup_delay)
+    if os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes"):
+        print("  [startup] delay skipped (SKIP_STARTUP_DELAY set)")
+    else:
+        startup_delay = random.randint(300, 3600)
+        print(f"  [startup] sleeping {startup_delay}s before execution...")
+        time.sleep(startup_delay)
 
     # 15% chance to skip this run entirely
     if random.random() < 0.15:
