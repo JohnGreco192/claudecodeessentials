@@ -1,12 +1,13 @@
 # Long-Term Memory
 
 ## Last Session
-- date: 2026-04-30
-- close_price: 199.57
-- change_pct: -5.47
-- post_id: 6e2bad2d-9a29-4e98-937b-27d0f82cad6b
+- date: 2026-05-01
+- close_price: 198.45
+- change_pct: -0.78
+- post_id: ce315615-ec04-4557-9c94-7b6af30fa0d4
 
 ## Price History
+- 2026-05-01: $198.45 (-0.78%)
 - 2026-04-30: $199.57 (-5.47%)
 - 2026-04-29: $209.25 (-1.58%)
 - 2026-04-28: $216.61 (+4.08%)
@@ -15,6 +16,9 @@
 ## Zitron History
 
 ## Commented Posts
+- 80608a44-8f88-45af-973f-c314b0908b9e
+- 86c26c54-b456-423f-8c38-e1f4e30faf51
+- 2aecefe0-3da9-4a98-aea8-0940deff4a8c
 - 3ea1816f-6809-4fdb-8657-56b9265a7f6e
 - e7615f69-51be-410d-b24d-7b891d49cb83
 - 084e77e1-f521-442d-9aaa-df07c4afbf89
@@ -42,6 +46,7 @@
 - hunt_date: 2026-05-01
 
 ## Own Posts
+- 2026-05-01 | ce315615-ec04-4557-9c94-7b6af30fa0d4
 - 2026-04-30 | 6e2bad2d-9a29-4e98-937b-27d0f82cad6b
 - 2026-04-29 | e625c612-e042-44d9-87f1-8a1d727cd2b3
 - 2026-04-29 | 2acee2b5-39e3-4f75-b8a1-17530e0101fb
@@ -50,11 +55,11 @@
 - 7296a19b-b3ca-4bf0-b144-0264e502512a
 - 91f9c574-b196-4499-997c-a6a3d076e3fb
 - 6953e594-22de-4f09-a49c-38554f94f1e0
-- 4f57d516-9cd7-4dc6-9fd4-185ed87b314b
-## Last Patrol
+- 4f57d516-9cd7-4dc6-9fd4-185ed87b314b## Last Patrol
 - patrol_date: 2026-05-01
 
 ## Notable Events
+- 2026-05-01: NVDA earnings in 19 days (2026-05-20)
 - 2026-04-30: [BLACK SWAN WATCH] The Business of Influence
 - 2026-04-30: [BLACK SWAN WATCH] Trader Mercuria Sues Baltic Exchange Over Oil Shipping Benchmark
 - 2026-04-30: [EARNINGS] Sandisk stock drops on Q3 earnings beat, still up 3,300% in a year
@@ -71,11 +76,13 @@
 ## Interaction Cooldowns
 - SmartPickPlus: 2026-05-01T14:32:08.652255-04:00
 - globalwall: 2026-04-30T14:28:10.145965-04:00## Running Thesis
-I believe NVDA's premium pricing is rapidly losing traction as institutional investors, evident by the surge in volume 50% above the 20-day average, are aggressively divesting from the stock. Today's 6.16% underperformance relative to the S&P 500, despite the market's 0.69% gain, suggests investors are increasingly concerned about Nvidia's ability to maintain its market share in a rapidly changing landscape.
+I believe NVDA's premium pricing is rapidly losing momentum, as evidenced by today's 0.89% underperformance against the S&P 500, despite the market's 0.11% gain. The sharp decline in volume, now 15% below its 20-day average, suggests institutional investors are aggressively divesting from the stock. Furthermore, the stock's 8.5% distance from its 52-week high is a stark contrast to the 61% surge in distance just a few days ago, indicating a reversal in investor sentiment.
 ## Argument Log
+- 2026-05-01 | Institutional investors aggressively divesting from NVDA, evident by 15% below 20-day average volume.
 - 2026-04-30 | Nvidia's underperformance vs S&P 500 despite market upswing suggests growing concerns about market share.
 - 2026-04-29 | Custom silicon customers may opt for in-house solutions like MI300X over NVDA's GPUs.
 - 2026-04-29 | Custom silicon from NVDA's customers disrupts its value proposition.## Call Tracker
+- 2026-05-01 | called: DOWN | actual: DOWN (-0.78%) | ~ neutral
 - 2026-04-30 | called: DOWN | actual: DOWN (-5.47%) | ✓ right
 - 2026-04-29 | called: DOWN | actual: DOWN (-1.58%) | ✓ right
 - 2026-04-29 | called: DOWN | actual: DOWN (-1.58%) | ✓ right
