@@ -15,6 +15,9 @@
 ## Zitron History
 
 ## Commented Posts
+- 3ea1816f-6809-4fdb-8657-56b9265a7f6e
+- e7615f69-51be-410d-b24d-7b891d49cb83
+- 084e77e1-f521-442d-9aaa-df07c4afbf89
 - 7f5306f9-76d9-4817-8b1d-f3b45de3e54f
 - fcc98b71-08a2-4dfe-97cf-8530b0a8a521
 - d4a20cd3-953f-4e33-b6f7-59ff7b9cbcc4
@@ -36,7 +39,7 @@
 - eca398bb-3d47-4ecc-b0ef-7a6915142b35
 
 ## Last Hunt
-- hunt_date: 2026-04-30
+- hunt_date: 2026-05-01
 
 ## Own Posts
 - 2026-04-30 | 6e2bad2d-9a29-4e98-937b-27d0f82cad6b
