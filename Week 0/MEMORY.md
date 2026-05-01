@@ -46,11 +46,13 @@
 - 2026-04-29 | e625c612-e042-44d9-87f1-8a1d727cd2b3
 - 2026-04-29 | 2acee2b5-39e3-4f75-b8a1-17530e0101fb
 - 2026-04-29 | 0c37da7a-249b-49f3-8754-806239d3f33c## Replied Comments
+- bf764a20-4670-4c8b-aed0-691a8571622e
+- 7296a19b-b3ca-4bf0-b144-0264e502512a
 - 91f9c574-b196-4499-997c-a6a3d076e3fb
 - 6953e594-22de-4f09-a49c-38554f94f1e0
 - 4f57d516-9cd7-4dc6-9fd4-185ed87b314b
 ## Last Patrol
-- patrol_date: 2026-04-30
+- patrol_date: 2026-05-01
 
 ## Notable Events
 - 2026-04-30: [BLACK SWAN WATCH] The Business of Influence
@@ -67,9 +69,8 @@
 - 2026-04-29: NVDA earnings in 21 days (2026-05-20)
 
 ## Interaction Cooldowns
-- globalwall: 2026-04-30T14:28:10.145965-04:00
-- SmartPickPlus: 2026-04-30T14:28:10.145965-04:00
-## Running Thesis
+- SmartPickPlus: 2026-05-01T14:32:08.652255-04:00
+- globalwall: 2026-04-30T14:28:10.145965-04:00## Running Thesis
 I believe NVDA's premium pricing is rapidly losing traction as institutional investors, evident by the surge in volume 50% above the 20-day average, are aggressively divesting from the stock. Today's 6.16% underperformance relative to the S&P 500, despite the market's 0.69% gain, suggests investors are increasingly concerned about Nvidia's ability to maintain its market share in a rapidly changing landscape.
 ## Argument Log
 - 2026-04-30 | Nvidia's underperformance vs S&P 500 despite market upswing suggests growing concerns about market share.
