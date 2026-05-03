@@ -31,14 +31,15 @@ All workflows use per-weekday cron entries (not a single fixed time) plus a 5–
 5. **Headline feeds** — semiconductor/AI feed (Reuters, VentureBeat, TechCrunch) + macro feed (Reuters Business, Bloomberg Markets)
 6. **Catalyst scan** — second LLM pass (low temperature, analytical mode) finds direct NVDA signals, indirect macro linkages, and black swan precursors in the day's headlines
 7. **Zitron feed** — fetches highest-scoring bear-relevant article from `wheresyoured.at`; agent extracts one claim, critiques or reinterprets it, ties it to a measurable NVDA risk — does not summarize
-8. **Build context** — injects all market data plus the posting plan (angle, tone, running thesis, reference to surface) into the LLM context block
-9. **Writer + critic loop** — generates rant (up to 3 attempts); critic enforces: ≥2 specific data points, domain language (forward P/E, multiple compression, margin pressure, etc.), no banned AI phrases, human voice
-10. **Title generation** — LLM writes a varied, personality-driven title each day; no fixed template
-11. **Submolt routing** — LLM picks the most relevant community from `general / ai / finance / stocks`
-12. **Post to Moltbook** — with verification challenge handling
-13. **Extract & evolve** — `extract_argument()` distills the core bear claim in ~15 words for the log; `update_running_thesis()` evolves the 2–3 sentence running thesis based on today's post and outcome
-14. **Memory persistence** — price history, post ID, Zitron history, argument log, running thesis, call tracker → committed back to repo via `git push`
-15. **Social engagement** (80% probability) — up to 1–3 comments on relevant posts; probabilistic per-post gate; 45/15/40 vote split (down/up/none)
+8. **Macro Tourist tools** — `econ_calendar` returns today's event (FOMC, CPI, NFP, etc.) plus next 5 upcoming releases with NVDA-specific framing; `commentary_lookup` fetches the latest transcript excerpts from fintwit favorites (Jim Bianco, Tony Greer, Kevin Muir, Patrick Ceresna, Jared Dillian). Both are non-blocking — a failed fetch is logged and skipped, never aborts the post.
+9. **Build context** — assembles the full LLM context block: NVDA price + market data + headline feeds + catalyst scan + Zitron hook + posting plan + `MACRO CONTEXT` block (omitted when both macro tools return empty)
+10. **Writer + critic loop** — generates rant (up to 3 attempts); critic enforces: ≥2 specific data points, domain language (forward P/E, multiple compression, margin pressure, etc.), no banned AI phrases, human voice
+11. **Title generation** — LLM writes a varied, personality-driven title each day; no fixed template
+12. **Submolt routing** — LLM picks the most relevant community from `general / ai / finance / stocks`
+13. **Post to Moltbook** — with verification challenge handling
+14. **Extract & evolve** — `extract_argument()` distills the core bear claim in ~15 words for the log; `update_running_thesis()` evolves the 2–3 sentence running thesis based on today's post and outcome
+15. **Memory persistence** — price history, post ID, Zitron history, argument log, running thesis, call tracker → committed back to repo via `git push`
+16. **Social engagement** (80% probability) — up to 1–3 comments on relevant posts; probabilistic per-post gate; 45/15/40 vote split (down/up/none)
 
 ### Morning Engagement
 
@@ -101,41 +102,50 @@ Three-day trace:
 - **ET-aware scheduling** — date logic uses US/Eastern time throughout; prevents UTC midnight clock drift from triggering idempotency false positives
 - **GitHub Actions as scheduler** — free, serverless cron with auto-injected `GITHUB_TOKEN`
 - **GitHub Models** — free LLM inference (`Meta-Llama-3.1-8B-Instruct`) inside Actions
-- **Macro Tourist skill module** — pluggable `macro_tourist/` tools inject broader market context without modifying core agent logic (see below)
+- **Macro Tourist skill module** — pluggable `Week 0/macro_tourist/` package adds economic calendar awareness and fintwit commentary lookup to the daily close pipeline without touching core agent logic
 
-## Macro Tourist Skill Module
+## Macro Tourist — Skill Module
 
-A standalone module (`macro_tourist/`) that gives the NVDA Bear Agent contextual awareness of the macro environment. Imported by `post_daily_close.py` with a graceful fallback — if the module is unavailable or any fetch fails, the daily post continues unaffected.
+Lives at `Week 0/macro_tourist/`. Two tools that run inside the daily close pipeline and inject broader market context into the LLM's context block. The NVDA Bear Agent stays NVDA-focused — macro context is *supporting terrain*, not a new thesis. On FOMC day, the agent knows the Fed just moved and can frame multiple compression risk accordingly. If a macro voice the agent follows is flagging capex deceleration, it can echo the framework without changing its core bear argument.
 
-### Tools
+Neither tool is load-bearing. If a fetch fails or the module is missing entirely, `post_daily_close.py` catches the exception, logs it, and the daily post runs as normal. No macro context → the `MACRO CONTEXT` block is simply omitted from the LLM input.
 
-**`econ_calendar.py`** — Returns today's economic event (if any) and the next 5 high-significance releases. Hardcoded 2026 BLS/BEA/Fed calendar (FOMC ×8, CPI ×12, NFP ×12, PCE ×12, GDP Advance ×4). Zero external dependencies.
+### `econ_calendar.py`
+
+Hardcoded 2026 BLS/BEA/Fed release schedule — FOMC (×8), CPI (×12), NFP (×12), PCE (×12), GDP Advance (×4). Zero external dependencies. `get_calendar_context(today_et)` returns today's event if one exists, plus the next 5 upcoming releases, with NVDA-specific framing baked into each event type.
 
 ```
-Today (non-event day):
-  UPCOMING: May 7 FOMC | May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI
+# Non-event day
+UPCOMING: May 7 FOMC | May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI
 
-FOMC day:
-  TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRITICAL]
-    → Rate decisions move growth/tech multiples. Higher-for-longer = multiple compression headwind for NVDA.
-  UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
+# FOMC day
+TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRITICAL]
+  → Rate decisions move growth/tech multiples. Higher-for-longer = multiple compression headwind for NVDA.
+UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
+
+# CPI day
+TODAY: April CPI — Inflation data (8:30am ET) — regime-defining [HIGH]
+  → Hot CPI = Fed on hold = risk-off rotation = tech/growth selloff terrain.
+UPCOMING: May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC | Jun 26 PCE
 ```
 
-**`commentary_lookup.py`** — Fetches recent macro commentary from fintwit favorites and injects clean text excerpts into the LLM context. Source priority:
+### `commentary_lookup.py`
 
-| Voice | Source | Method |
-|-------|--------|--------|
+Fetches the latest transcript excerpts from a fixed list of macro voices and returns clean text ready for LLM injection. Source hierarchy — tried in order until two results are found:
+
+| Voice | Primary venue | Fetch method |
+|-------|--------------|--------------|
 | Jim Bianco | Blockworks Macro, Forward Guidance, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
 | Tony Greer | Blockworks Macro, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
 | Kevin Muir | Real Vision | YouTube channel RSS + `youtube-transcript-api` |
-| Patrick Ceresna | MacroVoices | Web transcript scrape (free, no paywall) |
-| Jared Dillian | The Daily Dirtnap | Beehiiv/Substack free-tier RSS |
+| Patrick Ceresna | MacroVoices | Free transcript page scrape (macrovoices.com) |
+| Jared Dillian | The Daily Dirtnap | Beehiiv free-tier RSS |
 
-Falls back to `commentary_cache.json` (last successful fetch) if all live sources fail. No API keys required — YouTube channel RSS is a public XML endpoint.
+YouTube channel feeds are public XML endpoints — no API key required. MacroVoices publishes full professionally-edited transcripts for free. Dillian's free-tier RSS is stripped of paywall CTAs using the same `_strip_cta()` pattern as the Zitron feed. Results are cached to `commentary_cache.json`; the cache is returned if all live fetches fail.
 
-### How the Agent Uses It
+### What the LLM sees
 
-The macro context is injected as a `MACRO CONTEXT` block at the end of the LLM context, after the existing catalyst scan. The SOUL.md instructs the agent to use it as *supporting terrain* — it stays NVDA-focused but can reference the rate environment, event-day risk, or echo a macro framework when it reinforces the bear thesis. If no macro context is available, the block is omitted and nothing changes.
+Both tools write into a single `MACRO CONTEXT` block appended after the catalyst scan in the context string:
 
 ```
 MACRO CONTEXT (use as supporting terrain — stay NVDA-focused):
@@ -145,8 +155,11 @@ TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRIT
 UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
 
 MACRO COMMENTARY (Jim Bianco, Blockworks Macro, May 1):
-"...credit spreads widening while equities held — classic late-cycle tell..."
+"...credit spreads widening while equities held — classic late-cycle tell.
+The dollar strength trade is over when the Fed blinks..."
 ```
+
+SOUL.md tells the agent exactly how to use this: flag event-day multiple compression risk, echo a macro framework when it reinforces the bear case, reference the rate environment as structural headwind — but never pivot away from NVDA. The bear thesis doesn't change because the Fed is meeting; it gets sharper.
 
 ## Stack
 
