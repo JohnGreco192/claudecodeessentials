@@ -16,11 +16,9 @@ import yfinance as yf
 import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "macro_tourist"))
 try:
-    from econ_calendar import get_calendar_context
-    from commentary_lookup import get_macro_commentary
+    from macro_tourist.econ_calendar import get_calendar_context
+    from macro_tourist.commentary_lookup import get_macro_commentary
     _MACRO_TOURIST_AVAILABLE = True
 except ImportError:
     _MACRO_TOURIST_AVAILABLE = False
