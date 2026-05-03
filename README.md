@@ -101,7 +101,53 @@ Three-day trace:
 - **ET-aware scheduling** — date logic uses US/Eastern time throughout; prevents UTC midnight clock drift from triggering idempotency false positives
 - **GitHub Actions as scheduler** — free, serverless cron with auto-injected `GITHUB_TOKEN`
 - **GitHub Models** — free LLM inference (`Meta-Llama-3.1-8B-Instruct`) inside Actions
+- **Macro Tourist skill module** — pluggable `macro_tourist/` tools inject broader market context without modifying core agent logic (see below)
+
+## Macro Tourist Skill Module
+
+A standalone module (`macro_tourist/`) that gives the NVDA Bear Agent contextual awareness of the macro environment. Imported by `post_daily_close.py` with a graceful fallback — if the module is unavailable or any fetch fails, the daily post continues unaffected.
+
+### Tools
+
+**`econ_calendar.py`** — Returns today's economic event (if any) and the next 5 high-significance releases. Hardcoded 2026 BLS/BEA/Fed calendar (FOMC ×8, CPI ×12, NFP ×12, PCE ×12, GDP Advance ×4). Zero external dependencies.
+
+```
+Today (non-event day):
+  UPCOMING: May 7 FOMC | May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI
+
+FOMC day:
+  TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRITICAL]
+    → Rate decisions move growth/tech multiples. Higher-for-longer = multiple compression headwind for NVDA.
+  UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
+```
+
+**`commentary_lookup.py`** — Fetches recent macro commentary from fintwit favorites and injects clean text excerpts into the LLM context. Source priority:
+
+| Voice | Source | Method |
+|-------|--------|--------|
+| Jim Bianco | Blockworks Macro, Forward Guidance, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Tony Greer | Blockworks Macro, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Kevin Muir | Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Patrick Ceresna | MacroVoices | Web transcript scrape (free, no paywall) |
+| Jared Dillian | The Daily Dirtnap | Beehiiv/Substack free-tier RSS |
+
+Falls back to `commentary_cache.json` (last successful fetch) if all live sources fail. No API keys required — YouTube channel RSS is a public XML endpoint.
+
+### How the Agent Uses It
+
+The macro context is injected as a `MACRO CONTEXT` block at the end of the LLM context, after the existing catalyst scan. The SOUL.md instructs the agent to use it as *supporting terrain* — it stays NVDA-focused but can reference the rate environment, event-day risk, or echo a macro framework when it reinforces the bear thesis. If no macro context is available, the block is omitted and nothing changes.
+
+```
+MACRO CONTEXT (use as supporting terrain — stay NVDA-focused):
+ECONOMIC CALENDAR:
+TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRITICAL]
+  → Rate decisions move growth/tech multiples. Higher-for-longer = multiple compression headwind for NVDA.
+UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
+
+MACRO COMMENTARY (Jim Bianco, Blockworks Macro, May 1):
+"...credit spreads widening while equities held — classic late-cycle tell..."
+```
 
 ## Stack
 
-Python · GitHub Actions · GitHub Models · yfinance · feedparser · OpenClaw · Moltbook
+Python · GitHub Actions · GitHub Models · yfinance · feedparser · youtube-transcript-api · OpenClaw · Moltbook

@@ -9,12 +9,21 @@ import json
 import time
 import html
 import random
+import logging
 import requests
 import feedparser
 import yfinance as yf
 import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "macro_tourist"))
+try:
+    from econ_calendar import get_calendar_context
+    from commentary_lookup import get_macro_commentary
+    _MACRO_TOURIST_AVAILABLE = True
+except ImportError:
+    _MACRO_TOURIST_AVAILABLE = False
 
 _UTC = timezone.utc
 
@@ -998,6 +1007,8 @@ def build_context(
     market_headlines: list[str] | None = None,
     catalyst_assessment: dict | None = None,
     plan: dict | None = None,
+    macro_calendar: str = "",
+    macro_commentary: str = "",
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -1083,6 +1094,15 @@ def build_context(
         if parts:
             plan_block = "\nPOSTING PLAN (follow this):\n" + "\n".join(f"- {p}" for p in parts)
 
+    macro_context_block = ""
+    macro_parts = []
+    if macro_calendar:
+        macro_parts.append(f"ECONOMIC CALENDAR:\n{macro_calendar}")
+    if macro_commentary:
+        macro_parts.append(macro_commentary)
+    if macro_parts:
+        macro_context_block = "\n\nMACRO CONTEXT (use as supporting terrain — stay NVDA-focused):\n" + "\n\n".join(macro_parts)
+
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
@@ -1096,6 +1116,7 @@ def build_context(
         f"{catalyst_block}"
         f"{zitron_block}"
         f"{plan_block}"
+        f"{macro_context_block}"
     )
 
 
@@ -1423,11 +1444,34 @@ def main():
     if catalyst_assessment.get("black_swan_watch"):
         print(f"  ⚠️ black swan watch: {catalyst_assessment['black_swan_watch']}")
 
+    # Macro tourist tools — non-blocking; failures never stop the post
+    macro_calendar = ""
+    macro_commentary = ""
+    if _MACRO_TOURIST_AVAILABLE:
+        print(f"\n[{_now_et().isoformat()}] Fetching macro context...")
+        try:
+            macro_calendar = get_calendar_context(today)
+            if macro_calendar:
+                print(f"  calendar: {macro_calendar.splitlines()[0][:80]}")
+        except Exception as e:
+            print(f"  [macro_tourist] calendar failed: {e}")
+        try:
+            macro_commentary = get_macro_commentary()
+            if macro_commentary:
+                first_line = macro_commentary.splitlines()[0][:80]
+                print(f"  commentary: {first_line}")
+        except Exception as e:
+            print(f"  [macro_tourist] commentary failed: {e}")
+    else:
+        print(f"\n  [macro_tourist] module not available — skipping")
+
     context = build_context(price, headlines, memory, market, plan.get("tone", ""), zitron,
                             earnings_context=earnings_context,
                             market_headlines=market_headlines,
                             catalyst_assessment=catalyst_assessment,
-                            plan=plan)
+                            plan=plan,
+                            macro_calendar=macro_calendar,
+                            macro_commentary=macro_commentary)
     print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")

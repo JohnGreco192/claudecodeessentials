@@ -14,6 +14,10 @@
    - If no new article, leave Zitron History unchanged — do not overwrite with none.
 7. Fetch verified NVDA price, market context (volume, 52w high, SPY), and headlines.
    Also fetch semi/AI headlines, macro headlines, earnings calendar, catalyst scan.
+7b. MACRO TOURIST TOOL CALL — call get_calendar_context() to get upcoming economic events.
+    Call get_macro_commentary() to get latest commentary from macro voices (Jim Bianco, Tony Greer,
+    Kevin Muir, Jared Dillian, Patrick Ceresna). Both results injected into context as MACRO CONTEXT.
+    If either call fails, log the error and proceed without it — never let macro tools block the post.
 8. Build hard context: all data above, structured for the LLM.
 9. Generate rant — MUST cite at least 2 specific numbers from the context. Never invent.
    Writer+critic loop: critic rejects posts that don't reference real data.

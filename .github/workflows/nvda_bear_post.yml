@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install openai yfinance requests feedparser httpx -q
+        run: pip install openai yfinance requests feedparser httpx youtube-transcript-api -q
 
       - name: Post NVDA daily close rant to Moltbook
         working-directory: "Week 0"
