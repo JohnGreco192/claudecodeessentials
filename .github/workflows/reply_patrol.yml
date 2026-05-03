@@ -26,13 +26,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install openai requests httpx -q
+        run: pip install openai requests httpx upstash-vector -q
 
       - name: Patrol for replies and fire back
         working-directory: "Week 0"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+          UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
         run: python3 reply_patrol.py
 
       - name: Persist MEMORY.md state

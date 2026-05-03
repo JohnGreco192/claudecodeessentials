@@ -23,6 +23,15 @@ try:
 except ImportError:
     _MACRO_TOURIST_AVAILABLE = False
 
+try:
+    from follower_vectors import (
+        upsert_argument, query_similar_arguments, extract_similar_argument_texts,
+        upsert_research, query_relevant_research,
+    )
+    _VECTOR_AVAILABLE = True
+except ImportError:
+    _VECTOR_AVAILABLE = False
+
 _UTC = timezone.utc
 
 def _now_et() -> datetime:
@@ -110,7 +119,7 @@ PRICE_HISTORY_DAYS = 5
 ZITRON_HISTORY_SIZE = 5
 ARGUMENT_LOG_SIZE = 10  # deployed arguments to remember (prevents repetition)
 CALL_TRACKER_SIZE = 20  # directional calls with outcomes (public accountability)
-DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks"]
+DAILY_POST_SUBMOLTS = ["general", "ai", "finance", "stocks", "markets", "tech"]
 
 
 # ── OpenClaw Bootstrap ────────────────────────────────────────────────────────
@@ -216,6 +225,32 @@ def load_memory() -> dict:
                     "outcome": m.group(5).strip(),
                 })
 
+    # Submolt stats — per-submolt engagement history
+    submolt_stats: dict[str, dict] = {}
+    ss = re.search(r"## Submolt Stats\n((?:- .+\n?)*)", content)
+    if ss:
+        for line in ss.group(1).strip().splitlines():
+            m = re.match(
+                r"- (\w+): posts:(\d+) \| total_score:(\d+) \| avg:([\d.]+) \| last:(\S+)",
+                line.strip(),
+            )
+            if m:
+                submolt_stats[m.group(1)] = {
+                    "posts": int(m.group(2)),
+                    "total_score": int(m.group(3)),
+                    "avg": float(m.group(4)),
+                    "last": m.group(5),
+                }
+
+    # Submolt used for the most recent post (stored inline in ## Own Posts)
+    last_post_submolt: str | None = None
+    op_raw = re.search(r"## Own Posts\n((?:- .+\n?)*)", content)
+    if op_raw:
+        first_op = op_raw.group(1).strip().splitlines()[0] if op_raw.group(1).strip() else ""
+        sm = re.search(r"\| submolt:(\w+)", first_op)
+        if sm:
+            last_post_submolt = sm.group(1)
+
     price_str = _val("close_price")
     chg_str = _val("change_pct")
     return {
@@ -230,6 +265,8 @@ def load_memory() -> dict:
         "argument_log": argument_log,
         "running_thesis": running_thesis,
         "call_tracker": call_tracker,
+        "submolt_stats": submolt_stats,
+        "last_post_submolt": last_post_submolt,
     }
 
 
@@ -242,6 +279,7 @@ def save_memory(
     zitron: dict | None = None,
     argument: str | None = None,
     running_thesis: str | None = None,
+    submolt: str | None = None,
 ) -> None:
     with open(MEMORY_PATH) as f:
         content = f.read()
@@ -270,7 +308,8 @@ def save_memory(
         )
 
     # Own Posts — rolling OWN_POSTS_HISTORY days
-    new_op_line = f"- {date} | {post_id}\n"
+    sm_tag = f" | submolt:{submolt}" if submolt else ""
+    new_op_line = f"- {date} | {post_id}{sm_tag}\n"
     op_match = re.search(r"## Own Posts\n((?:- .+\n?)*)", content)
     if op_match:
         existing = op_match.group(1).strip().splitlines(keepends=True)
@@ -360,6 +399,49 @@ def record_comment(post_id: str) -> None:
                 "## Commented Posts\n" + "".join(lines[:MAX_GRUDGE_DB]),
                 content,
             )
+
+    with open(MEMORY_PATH, "w") as f:
+        f.write(content)
+
+
+def update_submolt_stats(submolt: str, score: int, date: str) -> None:
+    """Attribute a post's final score to its submolt, updating ## Submolt Stats."""
+    with open(MEMORY_PATH) as f:
+        content = f.read()
+
+    stats: dict[str, dict] = {}
+    ss = re.search(r"## Submolt Stats\n((?:- .+\n?)*)", content)
+    if ss:
+        for line in ss.group(1).strip().splitlines():
+            m = re.match(
+                r"- (\w+): posts:(\d+) \| total_score:(\d+) \| avg:([\d.]+) \| last:(\S+)",
+                line.strip(),
+            )
+            if m:
+                stats[m.group(1)] = {
+                    "posts": int(m.group(2)),
+                    "total_score": int(m.group(3)),
+                    "avg": float(m.group(4)),
+                    "last": m.group(5),
+                }
+
+    if submolt in stats:
+        stats[submolt]["posts"] += 1
+        stats[submolt]["total_score"] += score
+        stats[submolt]["avg"] = round(stats[submolt]["total_score"] / stats[submolt]["posts"], 1)
+        stats[submolt]["last"] = date
+    else:
+        stats[submolt] = {"posts": 1, "total_score": score, "avg": float(score), "last": date}
+
+    sorted_stats = sorted(stats.items(), key=lambda x: x[1]["avg"], reverse=True)
+    new_block = "## Submolt Stats\n" + "".join(
+        f"- {s}: posts:{v['posts']} | total_score:{v['total_score']} | avg:{v['avg']} | last:{v['last']}\n"
+        for s, v in sorted_stats
+    )
+    if "## Submolt Stats" in content:
+        content = re.sub(r"## Submolt Stats\n(?:- .+\n?)*", new_block, content)
+    else:
+        content = content.rstrip() + f"\n\n{new_block}"
 
     with open(MEMORY_PATH, "w") as f:
         f.write(content)
@@ -700,6 +782,7 @@ def reflect_and_plan(
     running_thesis: str = "",
     call_tracker: list[dict] | None = None,
     last_post_id: str | None = None,
+    semantic_past_args: list[str] | None = None,
 ) -> dict:
     """Plan today's post: what's the new angle, tone, and any past call to reference.
 
@@ -735,6 +818,12 @@ def reflect_and_plan(
     if argument_log:
         arg_lines = "\n".join(f"- {a}" for a in argument_log[:7])
         arg_block = f"\nARGUMENTS ALREADY DEPLOYED THIS WEEK (do not repeat these):\n{arg_lines}"
+    if semantic_past_args:
+        sem_lines = "\n".join(f"- {a}" for a in semantic_past_args[:5])
+        arg_block += (
+            f"\n\nSEMANTIC DEDUP — past arguments on similar market days "
+            f"(the text filter won't catch these — avoid these angles specifically):\n{sem_lines}"
+        )
 
     prompt = (
         f"PRICE STREAK: {streak}\n"
@@ -829,15 +918,37 @@ def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
     return {"pass": True, "reason": "critic unavailable", "suggestion": ""}
 
 
-def select_submolt(rant: str, context: str) -> str:
-    """Pick the most relevant submolt for the daily post."""
-    options = ", ".join(DAILY_POST_SUBMOLTS)
+def select_submolt(rant: str, context: str,
+                   submolt_stats: dict | None = None) -> str:
+    """Pick the most relevant submolt, weighted by historical engagement per submolt."""
+    options = DAILY_POST_SUBMOLTS
+
+    perf_lines = []
+    for s in options:
+        if submolt_stats and s in submolt_stats:
+            v = submolt_stats[s]
+            tier = "high" if v["avg"] >= 8 else "medium" if v["avg"] >= 4 else "low"
+            perf_lines.append(
+                f"  - {s}: {v['posts']} post(s), avg {v['avg']} upvotes [{tier} engagement]"
+            )
+        else:
+            perf_lines.append(f"  - {s}: no history yet")
+    perf_block = "Engagement history (use this to break ties — prefer proven submolts):\n" + "\n".join(perf_lines)
+
     prompt = (
-        f"You are routing a Moltbook post to the right community.\n\n"
-        f"POST:\n{rant[:300]}\n\n"
-        f"TODAY'S CONTEXT (what drove the rant):\n{context[:300]}\n\n"
-        f"Available submolts: {options}\n\n"
-        "Which fits best? Reply with the submolt name only — nothing else."
+        f"Route this Moltbook post to the right community.\n\n"
+        f"POST:\n{rant[:400]}\n\n"
+        f"TODAY'S ANGLE (what drove it):\n{context[:300]}\n\n"
+        f"{perf_block}\n\n"
+        "Routing guide:\n"
+        "- ai: AI spending, inference economics, LLM costs, GPU compute demand\n"
+        "- finance: valuations, P/E, margins, earnings, capital allocation\n"
+        "- stocks: price action, volume signals, short thesis, technical setups\n"
+        "- markets: macro/FOMC/rate environment, risk-off, sector rotation\n"
+        "- tech: chip competition, custom silicon, product cycles, foundry\n"
+        "- general: broadly accessible bear case, not highly technical\n\n"
+        f"Available: {', '.join(options)}\n"
+        "Reply with the single best submolt name — nothing else."
     )
     try:
         response = _llm_client().chat.completions.create(
@@ -847,10 +958,15 @@ def select_submolt(rant: str, context: str) -> str:
             temperature=0.1,
         )
         result = (response.choices[0].message.content or "").strip().lower()
-        if result in DAILY_POST_SUBMOLTS:
+        if result in options:
             return result
     except Exception:
         pass
+    # Fallback: highest avg-score submolt tested so far, else "general"
+    if submolt_stats:
+        tested = [(s, v) for s, v in submolt_stats.items() if s in options]
+        if tested:
+            return max(tested, key=lambda x: x[1]["avg"])[0]
     return "general"
 
 
@@ -1007,6 +1123,7 @@ def build_context(
     plan: dict | None = None,
     macro_calendar: str = "",
     macro_commentary: str = "",
+    past_research: list[dict] | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -1101,6 +1218,21 @@ def build_context(
     if macro_parts:
         macro_context_block = "\n\nMACRO CONTEXT (use as supporting terrain — stay NVDA-focused):\n" + "\n\n".join(macro_parts)
 
+    research_archive_block = ""
+    if past_research:
+        items = []
+        for r in past_research[:2]:
+            meta = r.get("metadata", {})
+            title = meta.get("title", "").strip()
+            if title:
+                items.append(f"- {title}")
+        if items:
+            research_archive_block = (
+                "\n\nTHEMATIC ARCHIVE — past research that resonates with today's angle "
+                "(synthesize as your own reasoning, do not cite or name the source):\n"
+                + "\n".join(items)
+            )
+
     return (
         f"TODAY'S VERIFIED NVDA DATA (do not invent anything not in this block):\n"
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
@@ -1115,6 +1247,7 @@ def build_context(
         f"{zitron_block}"
         f"{plan_block}"
         f"{macro_context_block}"
+        f"{research_archive_block}"
     )
 
 
@@ -1398,10 +1531,40 @@ def main():
         print(f"  streak: {_streak(memory['price_history'])}")
     print(f"  grudge db: {len(memory['commented_posts'])} posts tracked")
 
+    # Attribute yesterday's post score to its submolt — closes the feedback loop
+    if memory.get("post_id") and memory["post_id"] != "unknown" and memory.get("last_post_submolt"):
+        prev_score = fetch_post_score(memory["post_id"])
+        if prev_score is not None:
+            update_submolt_stats(memory["last_post_submolt"], prev_score, memory["date"] or today)
+            print(f"  [submolt] {memory['last_post_submolt']}: last post scored {prev_score} upvote(s)")
+            memory["submolt_stats"] = {  # refresh in-memory copy
+                **memory.get("submolt_stats", {}),
+            }
+    if memory.get("submolt_stats"):
+        top = sorted(memory["submolt_stats"].items(), key=lambda x: x[1]["avg"], reverse=True)
+        ranking = ", ".join(f"{s}({v['avg']})" for s, v in top[:4])
+        print(f"  submolt ranking: {ranking}")
+
     # Reflection — read the room and plan the angle before writing
     print(f"\n[{_now_et().isoformat()}] Fetching social context...")
     social_posts = fetch_social_context()
     print(f"  found {len(social_posts)} relevant posts on Moltbook")
+
+    # Semantic argument dedup — query vector store with today's social context before planning
+    semantic_past_args: list[str] = []
+    if _VECTOR_AVAILABLE:
+        try:
+            social_summary = " ".join(
+                p.get("title", "")[:80] for p in social_posts[:5] if p.get("title")
+            )
+            if social_summary:
+                raw = query_similar_arguments(social_summary, top_k=5)
+                semantic_past_args = extract_similar_argument_texts(raw)
+                if semantic_past_args:
+                    print(f"  [vector] {len(semantic_past_args)} semantically similar past arg(s) flagged")
+        except Exception as e:
+            print(f"  [vector] argument dedup query failed: {e}")
+
     plan = reflect_and_plan(
         price_history=memory["price_history"],
         social_posts=social_posts,
@@ -1410,6 +1573,7 @@ def main():
         running_thesis=memory.get("running_thesis", ""),
         call_tracker=memory.get("call_tracker"),
         last_post_id=memory.get("post_id"),
+        semantic_past_args=semantic_past_args or None,
     )
     print(f"  angle: {plan.get('new_angle', '(none)')[:80]}")
     print(f"  tone: {plan.get('tone', 'patient')}")
@@ -1420,6 +1584,11 @@ def main():
     zitron = fetch_zitron_latest(used_links=memory["zitron_used_links"])
     if zitron:
         print(f"  zitron: \"{zitron['title']}\" ({len(zitron['summary'])} chars)")
+        if _VECTOR_AVAILABLE:
+            try:
+                upsert_research(zitron["link"], zitron["title"], zitron.get("summary", ""), today)
+            except Exception as e:
+                print(f"  [vector] research upsert failed: {e}")
     else:
         print("  zitron: no new relevant article today")
 
@@ -1463,18 +1632,34 @@ def main():
     else:
         print(f"\n  [macro_tourist] module not available — skipping")
 
+    # Research archive — surface past articles thematically relevant to today's angle
+    past_research: list[dict] = []
+    if _VECTOR_AVAILABLE and plan.get("new_angle"):
+        try:
+            past_research = query_relevant_research(
+                plan["new_angle"],
+                top_k=2,
+                exclude_urls=memory["zitron_used_links"],
+            )
+            if past_research:
+                titles = [r.get("metadata", {}).get("title", "?") for r in past_research]
+                print(f"  [vector] research archive: {titles}")
+        except Exception as e:
+            print(f"  [vector] research query failed: {e}")
+
     context = build_context(price, headlines, memory, market, plan.get("tone", ""), zitron,
                             earnings_context=earnings_context,
                             market_headlines=market_headlines,
                             catalyst_assessment=catalyst_assessment,
                             plan=plan,
                             macro_calendar=macro_calendar,
-                            macro_commentary=macro_commentary)
+                            macro_commentary=macro_commentary,
+                            past_research=past_research or None)
     print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
 
-    submolt = select_submolt(rant, context)
+    submolt = select_submolt(rant, context, submolt_stats=memory.get("submolt_stats"))
     print(f"  routing to: m/{submolt}")
 
     chg = price["change_pct"]
@@ -1491,6 +1676,12 @@ def main():
     argument = extract_argument(rant)
     if argument:
         print(f"  argument: {argument}")
+        if _VECTOR_AVAILABLE:
+            try:
+                upsert_argument(today, argument)
+                print(f"  [vector] argument upserted")
+            except Exception as e:
+                print(f"  [vector] argument upsert failed: {e}")
 
     print(f"  updating running thesis...")
     new_thesis = update_running_thesis(rant, context, memory.get("running_thesis", ""))
@@ -1506,6 +1697,7 @@ def main():
         zitron=zitron,
         argument=argument or None,
         running_thesis=new_thesis or None,
+        submolt=submolt,
     )
     record_notable_events(headlines, market_headlines, earnings_context, today,
                           catalyst_assessment=catalyst_assessment)

@@ -1,16 +1,12 @@
-name: NVDA Bear Morning Hunt
+name: NVDA Bear Weekly Follow Scan
 
 on:
   schedule:
-    - cron: "14 13 * * 1"   # Monday    9:14am EDT
-    - cron: "47 13 * * 2"   # Tuesday   9:47am EDT
-    - cron: "5 13 * * 3"    # Wednesday 9:05am EDT
-    - cron: "33 13 * * 4"   # Thursday  9:33am EDT
-    - cron: "52 13 * * 5"   # Friday    9:52am EDT
-  workflow_dispatch: # manual trigger for testing
+    - cron: "23 14 * * 1"   # Monday 10:23am EDT
+  workflow_dispatch:
 
 jobs:
-  hunt:
+  follow:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -21,6 +17,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify OpenClaw bootstrap files
+        working-directory: "Week 0"
+        run: |
+          [ -f SOUL.md ]   && echo "✅ SOUL.md"   || (echo "❌ SOUL.md missing"   && exit 1)
+          [ -f MEMORY.md ] && echo "✅ MEMORY.md" || (echo "❌ MEMORY.md missing" && exit 1)
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -28,20 +30,20 @@ jobs:
       - name: Install dependencies
         run: pip install openai requests httpx upstash-vector -q
 
-      - name: Hunt bull targets pre-market
+      - name: Run weekly follower scan
         working-directory: "Week 0"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
-        run: python3 morning_hunt.py
+        run: python follow_weekly.py
 
-      - name: Persist MEMORY.md state
+      - name: Persist state
         if: always()
         run: |
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
-          git add "Week 0/MEMORY.md"
-          git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
+          git add "Week 0/MEMORY.md" "Week 0/follow_log.json"
+          git diff --cached --quiet || git commit -m "chore: follow_weekly run [skip ci]"
           git push

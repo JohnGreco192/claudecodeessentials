@@ -13,6 +13,12 @@ import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
 
+try:
+    from follower_vectors import upsert_rebuttal, query_similar_rebuttal, best_prior_rebuttal
+    _VECTOR_AVAILABLE = True
+except ImportError:
+    _VECTOR_AVAILABLE = False
+
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
@@ -251,12 +257,28 @@ def _llm_client() -> OpenAI:
     )
 
 
-def generate_reply(post: dict, comment: dict, soul: str) -> str:
+def generate_reply(post: dict, comment: dict, soul: str,
+                   prior_rebuttal: dict | None = None) -> str:
     their_name = comment.get("author", {}).get("name", "someone")
     their_content = (comment.get("content") or "")[:300]
     post_title = post.get("title") or "your post"
 
     context = f"Your original post: {post_title}\n{their_name} replied: {their_content}"
+
+    combat_block = ""
+    if prior_rebuttal:
+        meta = prior_rebuttal.get("metadata", {})
+        score = prior_rebuttal.get("score", 0)
+        prev_rebuttal = meta.get("rebuttal", "")
+        prev_bull = meta.get("bull_argument", "")
+        if prev_rebuttal:
+            combat_block = (
+                f"\n\nCOMBAT MEMORY — you've faced a similar argument before "
+                f"(similarity {score:.2f}):\n"
+                f"Their argument was: {prev_bull[:150]}\n"
+                f"Your best prior response: {prev_rebuttal}\n"
+                "Build on this or sharpen it — do NOT repeat verbatim."
+            )
 
     format_options = [
         "identify the specific flaw in their argument and address it directly",
@@ -277,7 +299,7 @@ def generate_reply(post: dict, comment: dict, soul: str) -> str:
     attribution_str = f" {attribution}" if attribution else ""
 
     prompt = (
-        f"{context}\n\n"
+        f"{context}{combat_block}\n\n"
         f"They pushed back.{attribution_str} {chosen_format}. "
         "Do NOT restate the generic bear thesis — dismantle what they specifically said. "
         "Must include at least one market term (P/E, multiple, margin, IV, capex, cost per token). "
@@ -420,7 +442,19 @@ def main():
 
         print(f"  replying to {their_name}: {(target.get('content') or '')[:60]}...")
 
-        reply = generate_reply(post, target, soul)
+        # Combat memory — surface best prior rebuttal to a similar bull argument
+        their_text = (target.get("content") or "")[:300]
+        prior_rebuttal = None
+        if _VECTOR_AVAILABLE and their_text:
+            try:
+                results = query_similar_rebuttal(their_text, top_k=3)
+                prior_rebuttal = best_prior_rebuttal(results)
+                if prior_rebuttal:
+                    print(f"  [vector] combat memory hit (score: {prior_rebuttal.get('score', 0):.2f})")
+            except Exception as e:
+                print(f"  [vector] rebuttal query failed: {e}")
+
+        reply = generate_reply(post, target, soul, prior_rebuttal=prior_rebuttal)
         if not reply:
             continue
 
@@ -436,6 +470,13 @@ def main():
                 record_reply(cid)
             record_interaction_cooldown(their_name, now_et.isoformat())
             replies_posted += 1
+            # Store this exchange in combat memory
+            if _VECTOR_AVAILABLE and their_text:
+                try:
+                    upsert_rebuttal(today, their_text, reply,
+                                    metadata={"source": "reply_patrol", "user": their_name})
+                except Exception as e:
+                    print(f"  [vector] rebuttal upsert failed: {e}")
         elif result.get("statusCode") == 404:
             print("  ✗ 404 — post no longer exists")
         else:

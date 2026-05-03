@@ -48,6 +48,8 @@ jobs:
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           ZITRON_RSS_URL: ${{ secrets.ZITRON_RSS_URL }}
           SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
+          UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+          UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
         run: python post_daily_close.py
 
       - name: Persist MEMORY.md state

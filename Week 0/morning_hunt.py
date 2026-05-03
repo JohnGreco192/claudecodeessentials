@@ -13,6 +13,12 @@ import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
 
+try:
+    from follower_vectors import upsert_rebuttal, query_similar_rebuttal, best_prior_rebuttal
+    _VECTOR_AVAILABLE = True
+except ImportError:
+    _VECTOR_AVAILABLE = False
+
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
@@ -206,7 +212,8 @@ def _check_banned(text: str) -> str | None:
     return None
 
 
-def generate_challenge(post: dict, comments: list[dict], soul: str) -> str:
+def generate_challenge(post: dict, comments: list[dict], soul: str,
+                       prior_exchange: dict | None = None) -> str:
     """Generate an analytical challenge or probing question — no taunts."""
     comment_block = "\n".join(
         f"- {c.get('author', {}).get('name', '?')}: {c['content'][:150]}"
@@ -217,6 +224,21 @@ def generate_challenge(post: dict, comments: list[dict], soul: str) -> str:
         f"Content: {str(post.get('content', ''))[:300]}\n"
         f"Comments:\n{comment_block or '(none yet)'}"
     )
+
+    combat_block = ""
+    if prior_exchange:
+        meta = prior_exchange.get("metadata", {})
+        score = prior_exchange.get("score", 0)
+        prev_challenge = meta.get("rebuttal", "")
+        prev_bull = meta.get("bull_argument", "")
+        if prev_challenge:
+            combat_block = (
+                f"\n\nCOMBAT MEMORY — you've challenged similar content before "
+                f"(similarity {score:.2f}):\n"
+                f"Their post was about: {prev_bull[:150]}\n"
+                f"Your prior challenge: {prev_challenge}\n"
+                "Sharpen this angle or find a more specific hook from what they actually said."
+            )
     format_options = [
         "probing question about their underlying assumptions",
         "data-driven observation that complicates their thesis",
@@ -227,7 +249,7 @@ def generate_challenge(post: dict, comments: list[dict], soul: str) -> str:
     chosen = random.choice(format_options)
 
     prompt = (
-        f"Pre-market NVDA discussion:\n\n{thread}\n\n"
+        f"Pre-market NVDA discussion:\n\n{thread}{combat_block}\n\n"
         f"Write a {chosen}. Challenge framing — analytical, not a taunt. "
         "Reference what they specifically said. Under 80 words. "
         "Must include at least one domain term: forward P/E, multiple compression, "
@@ -379,7 +401,20 @@ def main():
             continue
 
         print(f"\n  engaging: {title[:70]}...")
-        challenge = generate_challenge(post, existing, soul)
+
+        # Combat memory — surface best prior exchange on similar content
+        post_text = f"{post.get('title', '')} {str(post.get('content', ''))[:300]}"
+        prior_exchange = None
+        if _VECTOR_AVAILABLE and post_text.strip():
+            try:
+                results = query_similar_rebuttal(post_text, top_k=3)
+                prior_exchange = best_prior_rebuttal(results)
+                if prior_exchange:
+                    print(f"  [vector] prior exchange hit (score: {prior_exchange.get('score', 0):.2f})")
+            except Exception as e:
+                print(f"  [vector] rebuttal query failed: {e}")
+
+        challenge = generate_challenge(post, existing, soul, prior_exchange=prior_exchange)
         if not challenge:
             continue
 
@@ -390,6 +425,12 @@ def main():
             print("  ✓ posted")
             record_engagement(pid, today)
             engaged += 1
+            if _VECTOR_AVAILABLE and post_text.strip():
+                try:
+                    upsert_rebuttal(today, post_text, challenge,
+                                    metadata={"source": "morning_hunt", "post_id": pid})
+                except Exception as e:
+                    print(f"  [vector] rebuttal upsert failed: {e}")
             time.sleep(random.uniform(4, 12))
         elif result.get("statusCode") == 404:
             print("  ✗ 404 — not found")

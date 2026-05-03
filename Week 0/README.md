@@ -9,17 +9,22 @@ Week 0/
 ├── post_daily_close.py       # daily close agent
 ├── morning_hunt.py           # pre-market bull harassment
 ├── reply_patrol.py           # mid-day reply monitoring + debate responses
+├── follow_weekly.py          # weekly follower scan + Upstash Vector ranking
+├── follow_log.json           # detailed per-run follow records (git-tracked)
 ├── SOUL.md                   # persona + bear playbook
 ├── AGENTS.md                 # standard operating procedures
 ├── MEMORY.md                 # durable state across runs
 ├── USER.md                   # handler profile
-└── macro_tourist/            # skill module — macro context tools
-    ├── econ_calendar.py      # 2026 BLS/BEA/Fed release schedule
-    └── commentary_lookup.py  # fintwit favorites transcript fetcher
+├── macro_tourist/            # skill module — macro context tools
+│   ├── econ_calendar.py      # 2026 BLS/BEA/Fed release schedule
+│   └── commentary_lookup.py  # fintwit favorites transcript fetcher
+└── follower_vectors/         # skill module — Upstash Vector follower embeddings
+    └── vector_store.py       # upsert/query/update against Upstash Vector index
 .github/workflows/
-├── nvda_bear_post.yml    # fires 21:05 UTC (4pm ET)
-├── morning_hunt.yml      # fires 13:00 UTC (9am EDT / 8am EST)
-└── reply_patrol.yml      # fires 16:00 UTC (noon EDT / 11am EST)
+├── nvda_bear_post.yml    # fires Mon–Fri ~4:15–5:30pm ET
+├── morning_hunt.yml      # fires Mon–Fri ~9am EDT
+├── reply_patrol.yml      # fires Mon–Fri ~noon EDT
+└── follow_weekly.yml     # fires Monday 10:23am EDT
 ```
 
 ---
@@ -90,7 +95,48 @@ The agent builds a running model of what it's already said and whether it was ri
 ## Last Patrol         ← reply patrol idempotency stamp
 ## Interaction Cooldowns ← per-user 24h cooldown (prevents harassment of same person)
 ## Notable Events      ← auto-stamped by catalyst scan + manual annotations
+## Submolt Stats       ← per-submolt post count, total score, avg upvotes (sorted by avg)
+## Follow Week         ← current week number + last run date (idempotency + schedule)
+## Following           ← all followed usernames (dedup guard, cap 200)
+## Follow Log          ← compact per-run entry: date | week | added | usernames (cap 52)
 ```
+
+---
+
+## Weekly Follow Scan
+
+`follow_weekly.py` runs every Monday and grows the account's follower network on a deliberate ramp-then-sustain schedule.
+
+**Follow schedule**
+
+| Week | New follows |
+|------|-------------|
+| 1 | 5 |
+| 2 | 4 |
+| 3 | 3 |
+| 4 | 2 |
+| 5+ | 1/week forever |
+
+**Candidate discovery** — searches Moltbook for NVDA/AI/finance posts across 6 randomly sampled terms per run. Extracts unique authors, skipping anyone already followed or in the Grudge DB.
+
+**Relevance scoring** — each candidate gets a composite score from three signals:
+
+1. **Keyword density** — hits on bear-thesis terms in bio + recent posts (nvda, capex bubble, multiple compression, puts, etc.)
+2. **Upstash Vector similarity** — semantic proximity to the bear thesis persona *and* to profiles of previously followed users who generated high engagement; score scaled 0–3 bonus points
+3. **Presence signal** — small bonus for accounts with 10–2000 followers (active but not bots/mega-accounts)
+
+**Upstash Vector loop** — after each successful follow, the user's LLM-summarised profile is upserted into the vector index with metadata (`followed_date`, `week`, `score`, `engagement`). Engagement scores can be bumped by other agents when a followed user replies or interacts. Over time the index accumulates a personality fingerprint of who engages with the bear thesis — future runs query against this fingerprint to prioritise similar candidates.
+
+**Log persistence** — MEMORY.md gets three new sections: `## Follow Week` (schedule state + idempotency), `## Following` (all followed usernames, dedup guard), `## Follow Log` (compact weekly entry). `follow_log.json` stores the full per-user details for each run.
+
+**Setup** — two additional secrets required:
+
+| Secret | Value |
+|--------|-------|
+| `UPSTASH_VECTOR_REST_URL` | Your Upstash Vector index REST URL |
+| `UPSTASH_VECTOR_REST_TOKEN` | Your Upstash Vector REST token |
+
+Create the index at [upstash.com/vector](https://upstash.com/vector) with **text-embedding-3-small** as the embedding model (enables text-based upsert/query without pre-computing vectors).
 
 ---
 
@@ -143,28 +189,68 @@ YouTube channel feeds are public XML — no API key required. Results are cached
 - **Writer + critic loop** — two-LLM quality gate before any content is posted
 - **Verification solver** — two-stage: arithmetic eval → LLM fallback for obfuscated challenges; must complete within Moltbook's 5-minute window
 - **Anti-spam design** — per-weekday cron spread (not a single fixed time) + random 5–60 min startup delay + 15% skip probability; no two runs look identical
-- **Pluggable skill modules** — `macro_tourist/` extends the pipeline via clean package imports; non-blocking by design so a broken tool never takes down a post
+- **Pluggable skill modules** — `macro_tourist/` and `follower_vectors/` extend the pipeline via clean package imports; non-blocking by design so a broken tool never takes down a post
+- **Vector memory** — Upstash Vector (`follower_vectors/`) runs four semantic namespaces: follower profiles, deployed arguments (dedup), bull argument → rebuttal pairs (combat memory), and bear research archive (thematic retrieval). All degrade gracefully when credentials are absent.
+
+---
+
+## Follower Vectors
+
+`follower_vectors/` is the Upstash Vector skill module. All functions degrade gracefully when `UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN` are unset — a missing index never blocks a post or engagement run.
+
+The index uses four namespaces:
+
+| Namespace | What's stored | Written by | Read by |
+|-----------|--------------|------------|---------|
+| *(default)* | Followed-user personality profiles | `follow_weekly.py` | `follow_weekly.py` |
+| `arguments` | Deployed bear arguments (text embeddings) | `post_daily_close.py` after each post | `post_daily_close.py` at planning time |
+| `rebuttals` | Bull argument → our rebuttal pairs | `reply_patrol.py`, `morning_hunt.py` after each engagement | `reply_patrol.py`, `morning_hunt.py` before generating |
+| `research` | Bear research article title + summary | `post_daily_close.py` when Zitron article is selected | `post_daily_close.py` at context-build time |
+
+### How each namespace improves output
+
+**`arguments` — semantic dedup**  
+The rolling 10-entry Argument Log window catches verbatim repetition but misses semantic overlap. Before `reflect_and_plan()`, the social post titles for the day are queried against the arguments namespace. Any prior argument with similarity ≥ 0.72 is injected as an extended blocklist. The planning prompt distinguishes between *"don't repeat these exact arguments"* and *"these past arguments on similar market days — avoid these angles specifically."* Unlimited depth; the rolling window no longer matters.
+
+**`rebuttals` — combat memory**  
+Every time a reply or morning challenge is successfully posted, the bull's text is embedded (as the query surface) and our response stored as metadata. Before the next reply or challenge is generated, the incoming bull argument is queried against the namespace. If a prior exchange scores ≥ 0.72, the agent sees: *"you've faced this argument before — your best prior response: [X]. Build on this or sharpen it."* Rebuttals compound in quality over time rather than starting cold each session. Both `reply_patrol` and `morning_hunt` write to the same namespace, so the combat library is shared across workflows.
+
+**`research` — thematic archive**  
+When a Zitron article is selected today, it's upserted (URL-keyed, so re-fetching is idempotent). After the planning step produces an angle, the archive is queried against that angle with recently-used URLs excluded. Up to 2 matching past articles are injected into context as `THEMATIC ARCHIVE` — framed as background context for synthesis, not as new data to cite. This surfaces thematically resonant research from months ago without re-triggering the Zitron blocklist.
+
+### Seeding from existing data
+
+The argument log in `MEMORY.md` has dated entries that can be retroactively upserted. Each entry produces a deterministic ID (`arg:{date}:{md5[:10]}`) so repeated seeding is idempotent. Run `test_vectors.py` to verify the parsing logic; the seed itself runs on first `post_daily_close.py` execution once Upstash credentials are configured.
+
+### Future state (not yet built)
+
+- **Post engagement targeting** — embed post topics + engagement outcomes; weight morning hunt and social engagement toward content types where past comments generated replies or upvotes
+- **Notable Events historical lookup** — embed catalyst events on write; query at context-build time to surface historical precedents ("last time FOMC + earnings were within 10 days...")
 
 ---
 
 ## Setup
 
-Add two secrets under **Settings → Secrets → Actions:**
+Add secrets under **Settings → Secrets → Actions:**
 
-| Secret | Value |
-|--------|-------|
-| `MOLTBOOK_API_KEY` | Your Moltbook agent API key |
-| `ZITRON_RSS_URL` | *(Optional)* Premium Substack RSS for full articles |
+| Secret | Required by | Value |
+|--------|-------------|-------|
+| `MOLTBOOK_API_KEY` | all workflows | Your Moltbook agent API key |
+| `UPSTASH_VECTOR_REST_URL` | all workflows | Upstash Vector index REST URL |
+| `UPSTASH_VECTOR_REST_TOKEN` | all workflows | Upstash Vector REST token |
+| `ZITRON_RSS_URL` | `nvda_bear_post.yml` | *(Optional)* Premium Substack RSS for full articles |
 
-`GITHUB_TOKEN` is auto-injected. Push to `main` and all three workflows go live.
+`GITHUB_TOKEN` is auto-injected. Push to `main` and all four workflows go live.
 
 **Run locally:**
 ```bash
-pip install openai yfinance requests feedparser httpx youtube-transcript-api
+pip install openai yfinance requests feedparser httpx youtube-transcript-api upstash-vector
 export GITHUB_TOKEN=your_token
 export MOLTBOOK_API_KEY=your_key
+export UPSTASH_VECTOR_REST_URL=https://your-index.upstash.io
+export UPSTASH_VECTOR_REST_TOKEN=your_token
 cd "Week 0"
-python3 post_daily_close.py   # or morning_hunt.py / reply_patrol.py
+python3 post_daily_close.py   # or morning_hunt.py / reply_patrol.py / follow_weekly.py
 ```
 
 ---
