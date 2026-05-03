@@ -6,13 +6,16 @@ Built on the [OpenClaw](https://openclaw.ai) bootstrap convention: personality, 
 
 ```
 Week 0/
-├── post_daily_close.py   # daily close agent
-├── morning_hunt.py       # pre-market bull harassment
-├── reply_patrol.py       # mid-day reply monitoring + debate responses
-├── SOUL.md               # persona + bear playbook
-├── AGENTS.md             # standard operating procedures
-├── MEMORY.md             # durable state across runs
-└── USER.md               # handler profile
+├── post_daily_close.py       # daily close agent
+├── morning_hunt.py           # pre-market bull harassment
+├── reply_patrol.py           # mid-day reply monitoring + debate responses
+├── SOUL.md                   # persona + bear playbook
+├── AGENTS.md                 # standard operating procedures
+├── MEMORY.md                 # durable state across runs
+├── USER.md                   # handler profile
+└── macro_tourist/            # skill module — macro context tools
+    ├── econ_calendar.py      # 2026 BLS/BEA/Fed release schedule
+    └── commentary_lookup.py  # fintwit favorites transcript fetcher
 .github/workflows/
 ├── nvda_bear_post.yml    # fires 21:05 UTC (4pm ET)
 ├── morning_hunt.yml      # fires 13:00 UTC (9am EDT / 8am EST)
@@ -32,6 +35,7 @@ Fires after market close. Idempotent: exits immediately if today's date is alrea
 - **Earnings countdown** — yfinance calendar injects NVDA earnings date when within 30 days; flagged ⚠️ in context
 - **Semi/AI headlines** — Reuters Technology, VentureBeat, TechCrunch filtered for chip/AI relevance
 - **Macro catalyst scan** — unfiltered Reuters + Bloomberg feed passed to a low-temp LLM analyst that classifies headlines into: direct NVDA catalysts / indirect (FOMC, credit, capex) / black swan watch; flags injected into context and auto-stamped to `## Notable Events`
+- **Macro Tourist tools** — `econ_calendar` injects today's release (FOMC/CPI/NFP/PCE/GDP) with NVDA-specific framing, plus the next 5 upcoming events; `commentary_lookup` fetches the latest transcript excerpts from Jim Bianco, Tony Greer, Kevin Muir, Patrick Ceresna, and Jared Dillian; both injected as `MACRO CONTEXT` — non-blocking, failures are logged and skipped
 - **Writer + critic loop** — writer LLM (temp 0.9) + critic LLM (temp 0.1); critic enforces ≥2 specific data points, domain language (forward P/E, multiple compression, margin pressure, etc.), no banned AI phrases, human voice; up to 3 attempts before fallback
 - **Title generation** — LLM writes a varied, personality-driven title each day; no fixed template
 - **Dynamic submolt routing** — LLM routes to the best submolt (`general`, `ai`, `finance`, `stocks`)
@@ -90,6 +94,46 @@ The agent builds a running model of what it's already said and whether it was ri
 
 ---
 
+## Macro Tourist
+
+A skill module (`macro_tourist/`) that plugs into the daily close pipeline and gives the bear agent awareness of the macro environment. The agent stays NVDA-focused — macro context is *supporting terrain*, not a new thesis. On FOMC day it knows the Fed just moved and can frame multiple compression risk accordingly. If a macro voice it follows is flagging capex deceleration, it can echo the framework without pivoting away from the bear case.
+
+Both tools are non-blocking. A failed fetch is caught, logged, and skipped — the daily post is never held up. If both tools return empty the `MACRO CONTEXT` block is simply omitted from the LLM input.
+
+### `econ_calendar.py`
+
+Hardcoded 2026 BLS/BEA/Fed release schedule with NVDA-specific framing per event type. Zero external dependencies.
+
+```
+# Non-event day
+UPCOMING: May 7 FOMC | May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI
+
+# FOMC day
+TODAY: FOMC Rate Decision — Fed rate decision (2pm ET) — market-moving [CRITICAL]
+  → Rate decisions move growth/tech multiples. Higher-for-longer = multiple compression headwind for NVDA.
+UPCOMING: May 13 CPI | May 29 PCE | Jun 5 NFP | Jun 11 CPI | Jun 18 FOMC
+
+# CPI day
+TODAY: April CPI — Inflation data (8:30am ET) — regime-defining [HIGH]
+  → Hot CPI = Fed on hold = risk-off rotation = tech/growth selloff terrain.
+```
+
+### `commentary_lookup.py`
+
+Fetches the latest transcript excerpts from a fixed list of macro voices. Source hierarchy — tried in order until two results are found:
+
+| Voice | Venue | Method |
+|-------|-------|--------|
+| Jim Bianco | Blockworks Macro, Forward Guidance, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Tony Greer | Blockworks Macro, Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Kevin Muir | Real Vision | YouTube channel RSS + `youtube-transcript-api` |
+| Patrick Ceresna | MacroVoices | Free transcript page scrape (macrovoices.com) |
+| Jared Dillian | The Daily Dirtnap | Beehiiv free-tier RSS |
+
+YouTube channel feeds are public XML — no API key required. Results are cached to `commentary_cache.json`; cache is returned if all live fetches fail.
+
+---
+
 ## Architecture Patterns
 
 - **OpenClaw bootstrap** — Markdown-driven agent context (SOUL.md, AGENTS.md, MEMORY.md, USER.md)
@@ -99,6 +143,7 @@ The agent builds a running model of what it's already said and whether it was ri
 - **Writer + critic loop** — two-LLM quality gate before any content is posted
 - **Verification solver** — two-stage: arithmetic eval → LLM fallback for obfuscated challenges; must complete within Moltbook's 5-minute window
 - **Anti-spam design** — per-weekday cron spread (not a single fixed time) + random 5–60 min startup delay + 15% skip probability; no two runs look identical
+- **Pluggable skill modules** — `macro_tourist/` extends the pipeline via clean package imports; non-blocking by design so a broken tool never takes down a post
 
 ---
 
@@ -115,7 +160,7 @@ Add two secrets under **Settings → Secrets → Actions:**
 
 **Run locally:**
 ```bash
-pip install openai yfinance requests feedparser httpx
+pip install openai yfinance requests feedparser httpx youtube-transcript-api
 export GITHUB_TOKEN=your_token
 export MOLTBOOK_API_KEY=your_key
 cd "Week 0"
