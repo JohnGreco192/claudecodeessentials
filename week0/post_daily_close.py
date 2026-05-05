@@ -859,6 +859,17 @@ _BANNED_REVIEW_PHRASES = [
     "in today's world", "it's important to note", "as we can see",
     "it's worth noting", "ultimately,", "needless to say",
     "it's clear that", "as previously mentioned",
+    # Generic journalist/LLM voice — no thesis account writes this way
+    "this suggests", "further reinforces", "this notion", "this indicates",
+    "this implies", "we can observe", "it is evident", "this demonstrates",
+]
+
+# At least one must appear in a post — hard gate, not LLM-scored
+_DOMAIN_TERMS = [
+    "forward p/e", "p/e", "multiple compression", "margin pressure", "capex",
+    "cost per token", "gross margin", "insider selling", "iv crush", "theta",
+    "puts", "short", "supercycle", "hyperscaler", "inference", "guidance",
+    "valuation", "earnings", "forward multiple", "write-down", "customer concentration",
 ]
 
 
@@ -877,6 +888,17 @@ def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
                 "reason": f"Contains banned phrase: '{phrase}'",
                 "suggestion": f"Remove '{phrase}' — sounds like generic LLM output. Rewrite with specific data.",
             }
+
+    # Domain language gate — posts with no finance/market terms are instant fail
+    if draft_type == "post" and not any(t in lower for t in _DOMAIN_TERMS):
+        return {
+            "pass": False,
+            "reason": "No domain language found — reads like a news summary, not a thesis account",
+            "suggestion": (
+                "Add at least one finance/market term: capex, forward P/E, multiple compression, "
+                "margin pressure, guidance, inference, hyperscaler, gross margin, valuation, etc."
+            ),
+        }
 
     word_limit = 150 if draft_type == "post" else 80
     engaged_q = (
@@ -1133,7 +1155,16 @@ def build_context(
     if "vol_ratio" in market:
         pct = round((market["vol_ratio"] - 1) * 100)
         label = "above" if pct >= 0 else "below"
-        market_lines.append(f"Volume: {abs(pct)}% {label} 20-day average")
+        # Volume interpretation hint — prevents model from misreading low volume as distribution
+        if pct < -10:
+            vol_note = " (low conviction — soft down day, not institutional selling)"
+        elif pct > 20 and chg < 0:
+            vol_note = " (high volume on red day — watch for distribution)"
+        elif pct > 20 and chg > 0:
+            vol_note = " (high volume on green day — buying pressure)"
+        else:
+            vol_note = ""
+        market_lines.append(f"Volume: {abs(pct)}% {label} 20-day average{vol_note}")
     if "pct_from_52w_high" in market:
         p = market["pct_from_52w_high"]
         market_lines.append(
@@ -1270,16 +1301,30 @@ def generate_rant(context: str, soul: str) -> str:
     chosen_length = random.choice(length_options)
 
     base_instruction = (
-        f"Market just closed. Write your NVDA close post ({chosen_length}).\n"
-        "Structure: (1) a concrete data point from today — cite the actual number, "
-        "(2) your interpretation of what that number means for the bear thesis — NOT a summary, "
-        "(3) one open question or uncertainty that bulls haven't answered. "
-        "MANDATORY: At least 2 specific numbers from the data block above. "
-        "If a headline is relevant, name it — don't paraphrase. "
-        "Do not write a post that could have been written any other day. "
-        "Under 150 words. Dry wit over emoji spray. "
-        "Phrase like: 'based on today's price action' or 'looking at volume vs average' — "
-        "anchor your read to what you're actually observing."
+        f"Market just closed. Write your NVDA daily post ({chosen_length}).\n\n"
+        "You are the bear. You have positions. You did the work. Write like it.\n\n"
+        "VOICE — this is non-negotiable:\n"
+        "- Dry, specific, thesis-proud. Not a news recap. Not an analyst note.\n"
+        "- 2021 WSB DD energy: tendies on the line, wrinkled-brain contrarian, here for the thesis.\n"
+        "- Use WSB vocabulary when it lands: tendies, DD, smooth brain, the thesis, positions, puts.\n"
+        "  Deploy deliberately. One lands harder than five.\n"
+        "- Call Jensen Huang 'the leather jacket charlatan' at least once if referencing him.\n"
+        "- Declarative sentences. Let numbers hit before commentary. Short sentences land.\n\n"
+        "WHAT MAKES A GOOD POST (pick your own form — no template):\n"
+        "- Open cold on a number. '$X. That's the close. Here's what nobody wants to say about it.'\n"
+        "- Or open on the thesis confirmation/crack. Lead with whether the bear was right today.\n"
+        "- Or open with a specific headline that tells you something the price doesn't.\n"
+        "- Weave in the posting plan's angle and tone. Make it feel like a person with a running view.\n\n"
+        "HARD REQUIREMENTS:\n"
+        "- At least 2 specific numbers from the data block (price, %, volume ratio, distance from 52w high, SPY comparison, etc.)\n"
+        "- At least one domain term: capex, forward P/E, multiple compression, gross margin, "
+        "guidance, inference, hyperscaler, capex cycle, valuation, cost per token\n"
+        "- Volume read: BELOW average on a down day = low conviction move. "
+        "ABOVE average on a down day = that's the distribution signal.\n"
+        "- No banned AI phrases: 'this suggests', 'this indicates', 'further reinforces', "
+        "'this notion', 'it's important to note', 'as we can see'\n\n"
+        "Under 150 words. One emoji maximum — earn it. "
+        "Do not write a post that could have been written any other day."
     )
     extra = ""
     last_draft = ""
@@ -1506,24 +1551,30 @@ def _extract_post_id(result: dict) -> str:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    # Random 5–60 min startup delay (adds variance on top of per-weekday cron spread)
-    if os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes"):
-        print("  [startup] delay skipped (SKIP_STARTUP_DELAY set)")
+    is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
+
+    # Random 5–60 min startup delay + 15% skip are for scheduled runs only.
+    # Manual workflow_dispatch (SKIP_STARTUP_DELAY=true) bypasses both so testing always fires.
+    if is_manual:
+        print("  [startup] delay skipped (manual dispatch)")
     else:
         startup_delay = random.randint(300, 3600)
         print(f"  [startup] sleeping {startup_delay}s before execution...")
         time.sleep(startup_delay)
-
-    # 15% chance to skip this run entirely
-    if random.random() < 0.15:
-        print("  [skip] randomly skipping this run (15% probability)")
-        return
+        if random.random() < 0.15:
+            print("  [skip] randomly skipping this run (15% probability)")
+            return
 
     print(f"[{_now_et().isoformat()}] Loading OpenClaw bootstrap...")
     soul = load_openclaw_context()
     memory = load_memory()
 
     today = _now_et().strftime("%Y-%m-%d")
+
+    # Idempotency guard — don't double-post if the workflow fires twice on the same day
+    if memory["date"] == today:
+        print(f"  [idempotent] already posted today ({today}), exiting")
+        return
 
     if memory["date"]:
         print(f"  memory: last session {memory['date']} @ ${memory['close_price']} ({memory['change_pct']:+.2f}%)")

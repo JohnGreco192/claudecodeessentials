@@ -7,7 +7,12 @@ on:
     - cron: "5 13 * * 3"    # Wednesday 9:05am EDT
     - cron: "33 13 * * 4"   # Thursday  9:33am EDT
     - cron: "52 13 * * 5"   # Friday    9:52am EDT
-  workflow_dispatch: # manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      skip_delay:
+        description: 'Skip startup delay and random skip (for testing)'
+        type: boolean
+        default: false
 
 jobs:
   hunt:
@@ -29,12 +34,13 @@ jobs:
         run: pip install openai requests httpx upstash-vector -q
 
       - name: Hunt bull targets pre-market
-        working-directory: "Week 0"
+        working-directory: week0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+          SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
         run: python3 morning_hunt.py
 
       - name: Persist MEMORY.md state
@@ -42,6 +48,6 @@ jobs:
         run: |
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
-          git add "Week 0/MEMORY.md"
+          git add "week0/MEMORY.md"
           git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
           git push

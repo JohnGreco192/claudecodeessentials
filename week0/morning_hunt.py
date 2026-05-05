@@ -357,18 +357,20 @@ def find_relevant_posts(grudge_db: set[str]) -> list[dict]:
 
 
 def main():
-    # Random 5–60 min startup delay (adds timing variance on top of per-day cron spread)
-    delay = random.randint(300, 3600)
-    print(f"  [startup] sleeping {delay}s before execution...")
-    time.sleep(delay)
+    is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
+
+    if is_manual:
+        print("  [startup] delay skipped (manual dispatch)")
+    else:
+        delay = random.randint(300, 3600)
+        print(f"  [startup] sleeping {delay}s before execution...")
+        time.sleep(delay)
+        if random.random() < SKIP_PROBABILITY:
+            print("  [skip] randomly skipping this run (15% probability)")
+            return
 
     today = _now_et().strftime("%Y-%m-%d")
     print(f"[{_now_et().isoformat()}] Morning engagement starting — {today} ET")
-
-    # 15% chance to skip this run entirely
-    if random.random() < SKIP_PROBABILITY:
-        print("  [skip] randomly skipping this run (15% probability)")
-        return
 
     if already_hunted_today():
         print(f"Already engaged today ({today} ET). Exiting.")

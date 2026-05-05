@@ -23,7 +23,15 @@ from openai import OpenAI
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from follower_vectors import upsert_user, query_similar, fetch_user
+try:
+    from follower_vectors import upsert_user, query_similar, fetch_user
+    _VECTOR_AVAILABLE = True
+except ImportError as _e:
+    print(f"  [vector] import failed ({_e}) — vector scoring disabled")
+    _VECTOR_AVAILABLE = False
+    def upsert_user(*a, **kw): return False
+    def query_similar(*a, **kw): return []
+    def fetch_user(*a, **kw): return None
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
@@ -193,11 +201,13 @@ def _headers() -> dict:
 def search_posts(term: str, limit: int = 10) -> list[dict]:
     try:
         r = requests.get(f"{MOLTBOOK_BASE}/search",
-                         params={"q": term, "limit": limit}, timeout=8)
+                         params={"q": term, "limit": limit},
+                         headers=_headers(), timeout=8)
         if r.status_code == 200:
             return r.json().get("results", [])
-    except Exception:
-        pass
+        print(f"  [search] '{term}' → {r.status_code}")
+    except Exception as e:
+        print(f"  [search] '{term}' error: {e}")
     return []
 
 
@@ -225,17 +235,42 @@ def fetch_user_posts(username: str, limit: int = 5) -> list[dict]:
     return []
 
 
-def follow_user(username: str) -> bool:
-    """POST /users/{username}/follow — returns True on success."""
-    try:
-        r = requests.post(f"{MOLTBOOK_BASE}/users/{username}/follow",
-                          headers=_headers(), json={}, timeout=10)
-        data = r.json() if r.content else {}
-        if r.status_code in (200, 201) or data.get("success") or data.get("followed"):
-            return True
-        print(f"  [follow] {username} → {r.status_code}: {data}")
-    except Exception as e:
-        print(f"  [follow] {username} error: {e}")
+def follow_user(username: str, user_id: str | None = None) -> bool:
+    """Follow a user. Tries multiple endpoint patterns — logs which one works."""
+    # Build attempt list: try all plausible patterns for this API
+    # POST/PUT by username, by user_id (if known), and body-based fallbacks
+    attempts: list[tuple[str, str, dict]] = [
+        ("POST", f"{MOLTBOOK_BASE}/users/{username}/follow", {}),
+        ("PUT",  f"{MOLTBOOK_BASE}/users/{username}/follow", {}),
+        ("POST", f"{MOLTBOOK_BASE}/users/{username}/followers", {}),
+    ]
+    if user_id:
+        attempts += [
+            ("POST", f"{MOLTBOOK_BASE}/users/{user_id}/follow", {}),
+            ("PUT",  f"{MOLTBOOK_BASE}/users/{user_id}/follow", {}),
+        ]
+    attempts += [
+        ("POST", f"{MOLTBOOK_BASE}/follow", {"username": username}),
+        ("POST", f"{MOLTBOOK_BASE}/follows", {"username": username}),
+        ("POST", f"{MOLTBOOK_BASE}/follow", {"target_username": username}),
+    ]
+    if user_id:
+        attempts.append(("POST", f"{MOLTBOOK_BASE}/follow", {"user_id": user_id}))
+
+    for method, url, body in attempts:
+        try:
+            fn = requests.post if method == "POST" else requests.put
+            r = fn(url, headers=_headers(), json=body, timeout=10)
+            data = r.json() if r.content else {}
+            if r.status_code in (200, 201) or data.get("success") or data.get("followed"):
+                print(f"  [follow] {username} → ✓ via {method} {url.removeprefix(MOLTBOOK_BASE)}")
+                return True
+            if r.status_code == 404:
+                continue
+            # Non-404 failure — log and keep trying other patterns
+            print(f"  [follow] {username} → {method} {url.removeprefix(MOLTBOOK_BASE)} {r.status_code}: {str(data)[:120]}")
+        except Exception as e:
+            print(f"  [follow] {username} error ({method}): {e}")
     return False
 
 
@@ -387,8 +422,10 @@ def main():
     last_date = state["last_follow_date"]
     already_following = state["following"]
 
-    if already_followed_this_week(last_date):
+    force = os.environ.get("FORCE_RUN", "").lower() in ("true", "1", "yes")
+    if not force and already_followed_this_week(last_date):
         print(f"  Already ran this week (last: {last_date}). Exiting.")
+        print("  To force a re-run, set FORCE_RUN=true in the workflow dispatch.")
         return
 
     new_week = week_number + 1
@@ -412,8 +449,9 @@ def main():
         username = candidate["username"]
         score = candidate["score"]
 
-        print(f"\n  → {username} (score: {score})")
-        if follow_user(username):
+        user_id = str(candidate["profile"].get("id") or candidate["profile"].get("user_id") or "")
+        print(f"\n  → {username} id={user_id or '?'} (score: {score})")
+        if follow_user(username, user_id=user_id or None):
             print(f"    ✓ followed")
 
             # Store profile in Upstash Vector
@@ -441,13 +479,14 @@ def main():
 
         time.sleep(random.uniform(3, 8))
 
+    # Always write the JSON log — even on zero follows, so git add never fails
+    append_json_log(new_week, today, followed)
+
     if not followed:
         print("\n  No successful follows this run.")
         return
 
     record_follows(new_week, today, followed)
-    append_json_log(new_week, today, followed)
-
     print(f"\n[{_now_et().isoformat()}] Done — followed {len(followed)} users (week {new_week})")
     for u in followed:
         print(f"  @{u['username']} (score:{u['score']}, topics:{u['topics']})")

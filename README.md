@@ -6,7 +6,7 @@ A hands-on learning portfolio built with [Claude Code](https://claude.ai/code) �
 
 | Week | Project | Description |
 |------|---------|-------------|
-| [Week 0](./Week%200/) | NVDA Bear Agent | Autonomous three-workflow market commentary agent — daily close post, pre-market engagement, and reply patrol. Fetches live NVDA price, generates bearish analysis, and participates on Moltbook via GitHub Actions. Zero compute cost. |
+| [Week 0](./week0/) | NVDA Bear Agent | Autonomous three-workflow market commentary agent — daily close post, pre-market engagement, and reply patrol. Fetches live NVDA price, generates bearish analysis, and participates on Moltbook via GitHub Actions. Zero compute cost. |
 
 ## Week 0: NVDA Bear Agent
 
@@ -102,11 +102,11 @@ Three-day trace:
 - **ET-aware scheduling** — date logic uses US/Eastern time throughout; prevents UTC midnight clock drift from triggering idempotency false positives
 - **GitHub Actions as scheduler** — free, serverless cron with auto-injected `GITHUB_TOKEN`
 - **GitHub Models** — free LLM inference (`Meta-Llama-3.1-8B-Instruct`) inside Actions
-- **Macro Tourist skill module** — pluggable `Week 0/macro_tourist/` package adds economic calendar awareness and fintwit commentary lookup to the daily close pipeline without touching core agent logic
+- **Macro Tourist skill module** — pluggable `week0/macro_tourist/` package adds economic calendar awareness and fintwit commentary lookup to the daily close pipeline without touching core agent logic
 
 ## Macro Tourist — Skill Module
 
-Lives at `Week 0/macro_tourist/`. Two tools that run inside the daily close pipeline and inject broader market context into the LLM's context block. The NVDA Bear Agent stays NVDA-focused — macro context is *supporting terrain*, not a new thesis. On FOMC day, the agent knows the Fed just moved and can frame multiple compression risk accordingly. If a macro voice the agent follows is flagging capex deceleration, it can echo the framework without changing its core bear argument.
+Lives at `week0/macro_tourist/`. Two tools that run inside the daily close pipeline and inject broader market context into the LLM's context block. The NVDA Bear Agent stays NVDA-focused — macro context is *supporting terrain*, not a new thesis. On FOMC day, the agent knows the Fed just moved and can frame multiple compression risk accordingly. If a macro voice the agent follows is flagging capex deceleration, it can echo the framework without changing its core bear argument.
 
 Neither tool is load-bearing. If a fetch fails or the module is missing entirely, `post_daily_close.py` catches the exception, logs it, and the daily post runs as normal. No macro context → the `MACRO CONTEXT` block is simply omitted from the LLM input.
 

@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "23 14 * * 1"   # Monday 10:23am EDT
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run even if already ran this week (for testing)'
+        type: boolean
+        default: false
 
 jobs:
   follow:
@@ -18,7 +23,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify OpenClaw bootstrap files
-        working-directory: "Week 0"
+        working-directory: week0
         run: |
           [ -f SOUL.md ]   && echo "✅ SOUL.md"   || (echo "❌ SOUL.md missing"   && exit 1)
           [ -f MEMORY.md ] && echo "✅ MEMORY.md" || (echo "❌ MEMORY.md missing" && exit 1)
@@ -31,12 +36,13 @@ jobs:
         run: pip install openai requests httpx upstash-vector -q
 
       - name: Run weekly follower scan
-        working-directory: "Week 0"
+        working-directory: week0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+          FORCE_RUN: ${{ inputs.force_run }}
         run: python follow_weekly.py
 
       - name: Persist state
@@ -44,6 +50,7 @@ jobs:
         run: |
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
-          git add "Week 0/MEMORY.md" "Week 0/follow_log.json"
+          git add --ignore-unmatch "week0/MEMORY.md" "week0/follow_log.json"
           git diff --cached --quiet || git commit -m "chore: follow_weekly run [skip ci]"
+          git pull --rebase origin main
           git push

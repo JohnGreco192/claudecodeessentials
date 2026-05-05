@@ -368,18 +368,20 @@ def _review_reply(draft: str, context: str) -> dict:
 # ── Patrol ────────────────────────────────────────────────────────────────────
 
 def main():
-    # Random 5–60 min startup delay
-    delay = random.randint(300, 3600)
-    print(f"  [startup] sleeping {delay}s before execution...")
-    time.sleep(delay)
+    is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
+
+    if is_manual:
+        print("  [startup] delay skipped (manual dispatch)")
+    else:
+        delay = random.randint(300, 3600)
+        print(f"  [startup] sleeping {delay}s before execution...")
+        time.sleep(delay)
+        if random.random() < SKIP_PROBABILITY:
+            print("  [skip] randomly skipping this run (15% probability)")
+            return
 
     today = _now_et().strftime("%Y-%m-%d")
     print(f"[{_now_et().isoformat()}] Reply Patrol starting — {today} ET")
-
-    # 15% chance to skip this run entirely
-    if random.random() < SKIP_PROBABILITY:
-        print("  [skip] randomly skipping this run (15% probability)")
-        return
 
     if already_patrolled_today():
         print(f"Already patrolled today ({today} ET). Exiting.")
