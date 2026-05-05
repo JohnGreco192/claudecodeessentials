@@ -265,9 +265,7 @@ def follow_user(username: str, user_id: str | None = None) -> bool:
             if r.status_code in (200, 201) or data.get("success") or data.get("followed"):
                 print(f"  [follow] {username} → ✓ via {method} {url.removeprefix(MOLTBOOK_BASE)}")
                 return True
-            if r.status_code == 404:
-                continue
-            # Non-404 failure — log and keep trying other patterns
+            # Log every failure so we can debug which patterns the API actually responds to
             print(f"  [follow] {username} → {method} {url.removeprefix(MOLTBOOK_BASE)} {r.status_code}: {str(data)[:120]}")
         except Exception as e:
             print(f"  [follow] {username} error ({method}): {e}")
@@ -353,7 +351,8 @@ def discover_candidates(already_following: set[str]) -> list[dict]:
     Search Moltbook for relevant posts, extract unique authors,
     fetch their profiles and recent posts, return scored candidates.
     """
-    seen_authors: set[str] = set(already_following)
+    OUR_HANDLE = "nvda_regard"
+    seen_authors: set[str] = set(already_following) | {OUR_HANDLE}
     raw_candidates: list[dict] = []
 
     for term in random.sample(_SEARCH_TERMS, min(6, len(_SEARCH_TERMS))):

@@ -51,6 +51,6 @@ jobs:
           git config user.name "nvda_regard"
           git config user.email "actions@github.com"
           git pull --rebase --autostash origin main
-          git add --ignore-unmatch "week0/MEMORY.md"
+          git add "week0/MEMORY.md"
           git diff --cached --quiet || git commit -m "chore: follow_weekly run [skip ci]"
           git push
