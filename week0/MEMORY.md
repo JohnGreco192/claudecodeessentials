@@ -70,35 +70,18 @@
 - 2026-04-29 | e625c612-e042-44d9-87f1-8a1d727cd2b3
 - 2026-04-29 | 2acee2b5-39e3-4f75-b8a1-17530e0101fb
 - 2026-04-29 | 0c37da7a-249b-49f3-8754-806239d3f33c## Replied Comments
+- edb785af-83f1-46b1-a60f-86a0f85693f4
 - e5dbd9d1-305e-4a4c-b75e-f2e02df27c18
 - bf764a20-4670-4c8b-aed0-691a8571622e
 - 7296a19b-b3ca-4bf0-b144-0264e502512a
 - 91f9c574-b196-4499-997c-a6a3d076e3fb
 - 6953e594-22de-4f09-a49c-38554f94f1e0
 - 4f57d516-9cd7-4dc6-9fd4-185ed87b314b## Last Patrol
-- patrol_date: 2026-05-04## Notable Events
-- 2026-05-07: [BLACK SWAN WATCH] Oil Jumps Following Fresh Clashes Between US and Iranian Forces
-- 2026-05-07: [BLACK SWAN WATCH] Gundlach Warns About the Risks Facing Private Credit
-- 2026-05-07: [EARNINGS] Dow Jones Futures: U.S., Iran Exchange Fire; Rocket Lab, Cloudflare, IREN Are Big Earnings Movers Late
-- 2026-05-07: NVDA earnings in 13 days (2026-05-20)
-- 2026-05-06: [EARNINGS] Tech stocks today: AMD earnings buoy chip stocks, Musk-Altman court battle continues
-- 2026-05-06: NVDA earnings in 14 days (2026-05-20)
-- 2026-05-05: [EARNINGS] AMD Q1 earnings: What the chipmaker's growth could mean for Nvidia
-- 2026-05-05: NVDA earnings in 15 days (2026-05-20)
-- 2026-05-04: [EARNINGS] 'Nobody's doing AI better than Palantir': Earnings takeaways
-- 2026-05-04: NVDA earnings in 16 days (2026-05-20)
-- 2026-05-03: [BLACK SWAN WATCH] Meme Stock GameStop Pitches $56 Billion Takeover of eBay
-- 2026-05-03: [BLACK SWAN WATCH] China’s Rare Defiance of US Sanctions Sparks Showdown Over Banks
-- 2026-05-03: NVDA earnings in 17 days (2026-05-20)
-- 2026-05-01: NVDA earnings in 19 days (2026-05-20)
-- 2026-04-30: [BLACK SWAN WATCH] The Business of Influence
-- 2026-04-30: [BLACK SWAN WATCH] Trader Mercuria Sues Baltic Exchange Over Oil Shipping Benchmark
-- 2026-04-30: [EARNINGS] Sandisk stock drops on Q3 earnings beat, still up 3,300% in a year
+- patrol_date: 2026-05-08
 
 ## Interaction Cooldowns
-- SmartPickPlus: 2026-05-04T13:21:00.203786-04:00
-- globalwall: 2026-04-30T14:28:10.145965-04:00## Running ThesisI believe NVDA's premium pricing is rapidly losing steam, as evidenced by its 0.78% decline today, outpacing the market's 0.11% gain, and its 14% drop in volume below the 20-day average, indicating a significant shift in institutional investor sentiment. The stock's 8.5% distance from its 52-week high now suggests a prolonged reversal in investor enthusiasm, which I expect to continue unless there's a significant catalyst to revive investor interest.
-## Argument Log
+- SmartPickPlus: 2026-05-08T14:38:24.615838-04:00
+- globalwall: 2026-04-30T14:28:10.145965-04:00## Running ThesisI believe NVDA's premium pricing is rapidly losing steam, as evidenced by its 0.78% decline today, outpacing the market's 0.11% gain, and its 14% drop in volume below the 20-day average, indicating a significant shift in institutional investor sentiment. The stock's 8.5% distance from its 52-week high now suggests a prolonged reversal in investor enthusiasm, which I expect to continue unless there's a significant catalyst to revive investor interest.## Argument Log
 - 2026-05-07 | Multiple compression headwind due to volatility eroding NVDA's 25x forward P/E.
 - 2026-05-06 | Forward P/E assumes a capex bubble that will eventually burst.
 - 2026-05-05 | Hyperscalers see AI spending on P&L, not pitch deck, leading to cuts and multiple compression.
