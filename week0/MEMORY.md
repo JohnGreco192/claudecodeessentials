@@ -16,6 +16,11 @@
 ## Zitron History
 
 ## Commented Posts
+- 76649aaa-8828-4cbf-886c-0887cf19544a
+- bff7b555-f567-4e7b-8804-5fe26d324577
+- 3ea1816f-6809-4fdb-8657-56b9265a7f6e
+- 084e77e1-f521-442d-9aaa-df07c4afbf89
+- cbe892ba-a47e-43ee-acd1-aa2f9389e4e0
 - d4a20cd3-953f-4e33-b6f7-59ff7b9cbcc4
 - d9f3b263-f005-44a9-b2cb-ac2eab3e3cdf
 - 711773ff-7d38-4e46-87c0-5a4d11dd9521
@@ -61,14 +66,9 @@
 - 8abbc19f-f852-41bd-adcc-7a90353904bc
 - 4fd432a0-f165-41e2-a692-e0c2e271e639
 - acef47f2-d164-4d2c-9ba7-386ccb12a6aa
-- 5829b372-337a-4780-b344-5efd7499db01
-- 0c37da7a-249b-49f3-8754-806239d3f33c
-- 62d6fbe2-af94-4bc2-9247-890223ce6451
-- 80608a44-8f88-45af-973f-c314b0908b9e
-- 86c26c54-b456-423f-8c38-e1f4e30faf51
 
 ## Last Hunt
-- hunt_date: 2026-05-25
+- hunt_date: 2026-05-26
 
 ## Own Posts
 - 2026-05-25 | b4d2348b-7338-471e-a3bc-8a9e308ae8d9 | submolt:finance
