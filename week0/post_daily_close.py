@@ -492,14 +492,45 @@ def fetch_zitron_latest(used_links: set[str]) -> dict | None:
 # ── Market Data ───────────────────────────────────────────────────────────────
 
 def get_nvda_price() -> dict:
-    fi = yf.Ticker("NVDA").fast_info
-    current = float(fi.last_price)
-    prev = float(fi.previous_close)
+    ticker = yf.Ticker("NVDA")
+    current = None
+    prev = None
+    open_price = None
+    high = None
+    low = None
+    volume = None
+    as_of = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        fi = ticker.fast_info
+        current = float(fi.last_price)
+        prev = float(fi.previous_close)
+    except Exception:
+        pass
+    try:
+        hist = ticker.history(period="2d")
+        if not hist.empty:
+            row = hist.iloc[-1]
+            open_price = float(row["Open"])
+            high = float(row["High"])
+            low = float(row["Low"])
+            volume = int(row["Volume"])
+            if current is None:
+                current = float(row["Close"])
+        if prev is None and len(hist) > 1:
+            prev = float(hist.iloc[-2]["Close"])
+    except Exception:
+        pass
+    if current is None or prev is None:
+        raise RuntimeError("Unable to fetch NVDA price data")
     return {
         "price": round(current, 2),
         "prev_close": round(prev, 2),
         "change_pct": round(((current - prev) / prev) * 100, 2),
-        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
+        "open": round(open_price, 2) if open_price is not None else None,
+        "high": round(high, 2) if high is not None else None,
+        "low": round(low, 2) if low is not None else None,
+        "volume": volume,
+        "as_of": as_of,
     }
 
 
@@ -520,21 +551,29 @@ def get_nvda_news(max_items: int = 5) -> list[str]:
 
 def get_market_context() -> dict:
     ctx: dict = {}
+    ticker = yf.Ticker("NVDA")
     try:
-        hist = yf.Ticker("NVDA").history(period="22d")
+        hist = ticker.history(period="22d")
         if not hist.empty and len(hist) > 1:
             avg_vol = float(hist["Volume"].iloc[:-1].mean())
             today_vol = float(hist["Volume"].iloc[-1])
+            prev_vol = float(hist["Volume"].iloc[-2])
             if avg_vol > 0:
                 ctx["vol_ratio"] = round(today_vol / avg_vol, 2)
+            if prev_vol > 0:
+                ctx["volume_change_pct"] = round((today_vol / prev_vol - 1) * 100, 1)
+            ctx["avg_volume"] = int(avg_vol)
     except Exception:
         pass
     try:
-        fi = yf.Ticker("NVDA").fast_info
+        fi = ticker.fast_info
         high = float(fi.year_high)
+        low = float(fi.year_low)
         current = float(fi.last_price)
         if high > 0:
             ctx["pct_from_52w_high"] = round((current / high - 1) * 100, 1)
+        if low > 0:
+            ctx["pct_from_52w_low"] = round((current / low - 1) * 100, 1)
     except Exception:
         pass
     try:
@@ -544,6 +583,94 @@ def get_market_context() -> dict:
         )
     except Exception:
         pass
+    return ctx
+
+
+def get_nvda_profile() -> dict:
+    """Fetch NVDA fundamentals and share structure data for richer context."""
+    ctx: dict = {}
+    ticker = yf.Ticker("NVDA")
+    info = {}
+    try:
+        info = getattr(ticker, "info", None) or ticker.get_info()
+    except Exception:
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+    if not isinstance(info, dict):
+        info = {}
+    try:
+        cap = info.get("marketCap")
+        if cap and cap > 0:
+            ctx["market_cap"] = round(cap / 1_000_000_000, 1)
+        for key in ("trailingPE", "forwardPE", "grossMargins", "profitMargins",
+                    "revenueGrowth", "earningsQuarterlyGrowth", "beta"):
+            val = info.get(key)
+            if isinstance(val, (int, float)):
+                ctx[key] = round(val, 3) if key in ("grossMargins", "profitMargins") else round(val, 2)
+        float_shares = info.get("floatShares")
+        if float_shares:
+            ctx["float_shares"] = int(float_shares)
+        recommendation = info.get("recommendationMean")
+        if recommendation is not None:
+            ctx["recommendation_mean"] = round(float(recommendation), 2)
+    except Exception:
+        pass
+    return ctx
+
+
+def get_nvda_extended_fundamentals() -> dict:
+    """Fetch technical and trend-based context: margin trends, momentum, volatility, short interest.
+    
+    Returns rich context for posts rooted in technical + fundamental reality.
+    """
+    ctx: dict = {}
+    ticker = yf.Ticker("NVDA")
+    
+    # Recent momentum — 5-day, 20-day, 50-day moving averages
+    try:
+        hist = ticker.history(period="100d")
+        if not hist.empty and len(hist) >= 50:
+            current_close = float(hist["Close"].iloc[-1])
+            ma5 = float(hist["Close"].iloc[-5:].mean())
+            ma20 = float(hist["Close"].iloc[-20:].mean())
+            ma50 = float(hist["Close"].iloc[-50:].mean())
+            ctx["ma5"] = round(ma5, 2)
+            ctx["ma20"] = round(ma20, 2)
+            ctx["ma50"] = round(ma50, 2)
+            ctx["close_vs_ma20"] = round((current_close / ma20 - 1) * 100, 1)
+            ctx["close_vs_ma50"] = round((current_close / ma50 - 1) * 100, 1)
+            # Volatility — 20-day standard deviation as % of moving average
+            ctx["volatility_20d"] = round(hist["Close"].iloc[-20:].std() / ma20 * 100, 1)
+    except Exception:
+        pass
+    
+    # RSI-like momentum (simplified: recent % change strength)
+    try:
+        hist = ticker.history(period="15d")
+        if not hist.empty and len(hist) >= 10:
+            recent_returns = hist["Close"].pct_change().iloc[-10:].values
+            updays = sum(1 for r in recent_returns if r > 0)
+            ctx["updays_last_10"] = updays
+    except Exception:
+        pass
+    
+    # Sentiment from analyst recommendations
+    info = {}
+    try:
+        info = getattr(ticker, "info", None) or ticker.get_info()
+    except Exception:
+        try:
+            info = ticker.info or {}
+        except Exception:
+            pass
+    if isinstance(info, dict):
+        if info.get("numberOfAnalystRatings"):
+            ctx["analyst_count"] = info.get("numberOfAnalystRatings")
+        if info.get("targetMeanPrice"):
+            ctx["target_mean_price"] = round(float(info["targetMeanPrice"]), 2)
+    
     return ctx
 
 
@@ -763,6 +890,36 @@ def fetch_social_context(limit_per_term: int = 5) -> list[dict]:
     return posts
 
 
+def build_semantic_query(
+    social_posts: list[dict],
+    price: dict | None = None,
+    market: dict | None = None,
+    headlines: list[str] | None = None,
+) -> str:
+    pieces = []
+    if social_posts:
+        pieces.append("Recent Moltbook discussion titles:")
+        pieces.extend(f"- {p['title']}" for p in social_posts[:5] if p.get("title"))
+    if price:
+        pieces.append(
+            f"NVDA closed at ${price['price']} ({price['change_pct']:+.2f}%), "
+            f"prev close ${price['prev_close']}"
+        )
+        if price.get("open") is not None:
+            pieces.append(f"today opened at ${price['open']}")
+        if price.get("high") is not None and price.get("low") is not None:
+            pieces.append(f"intraday range ${price['low']}–${price['high']}")
+    if market:
+        if market.get("vol_ratio") is not None:
+            pieces.append(f"volume ratio {market['vol_ratio']}x vs 20-day average")
+        if market.get("spy_chg") is not None:
+            pieces.append(f"SPY moved {market['spy_chg']:+.2f}%")
+    if headlines:
+        pieces.append("NVDA-related headlines:")
+        pieces.extend(f"- {h}" for h in headlines[:5])
+    return "\n".join(pieces)
+
+
 def fetch_post_comments(post_id: str) -> list[dict]:
     try:
         r = requests.get(f"{MOLTBOOK_BASE}/posts/{post_id}/comments",
@@ -783,6 +940,10 @@ def reflect_and_plan(
     call_tracker: list[dict] | None = None,
     last_post_id: str | None = None,
     semantic_past_args: list[str] | None = None,
+    price: dict | None = None,
+    market: dict | None = None,
+    company_profile: dict | None = None,
+    headlines: list[str] | None = None,
 ) -> dict:
     """Plan today's post: what's the new angle, tone, and any past call to reference.
 
@@ -825,12 +986,43 @@ def reflect_and_plan(
             f"(the text filter won't catch these — avoid these angles specifically):\n{sem_lines}"
         )
 
+    extra_context = []
+    if price:
+        extra_context.append(
+            f"TODAY'S CLOSE: ${price['price']} ({price['change_pct']:+.2f}%), prev close ${price['prev_close']}"
+        )
+        if price.get("open") is not None:
+            extra_context.append(f"Open: ${price['open']}")
+        if price.get("high") is not None and price.get("low") is not None:
+            extra_context.append(f"Range: ${price['low']}–${price['high']}")
+    if market:
+        if market.get("vol_ratio") is not None:
+            extra_context.append(f"Volume ratio: {market['vol_ratio']}x vs 20-day avg")
+        if market.get("pct_from_52w_high") is not None:
+            extra_context.append(f"Distance from 52w high: {market['pct_from_52w_high']}%")
+        if market.get("spy_chg") is not None:
+            extra_context.append(f"SPY move: {market['spy_chg']:+.2f}%")
+    if company_profile:
+        parts = []
+        if company_profile.get("market_cap") is not None:
+            parts.append(f"market cap ${company_profile['market_cap']}B")
+        if company_profile.get("forwardPE") is not None:
+            parts.append(f"forward P/E {company_profile['forwardPE']}")
+        if company_profile.get("trailingPE") is not None:
+            parts.append(f"trailing P/E {company_profile['trailingPE']}")
+        if parts:
+            extra_context.append("Company profile: " + ", ".join(parts))
+    if headlines:
+        extra_context.append("NVDA headlines today:")
+        extra_context.extend(f"- {h}" for h in headlines[:5])
+
     prompt = (
         f"PRICE STREAK: {streak}\n"
         f"{last_call_line}\n"
         f"{score_line}\n"
         f"RUNNING THESIS: {running_thesis or '(not yet developed)'}"
         f"{arg_block}\n\n"
+        f"{('\n'.join(extra_context) + '\n\n') if extra_context else ''}"
         f"WHAT MOLTBOOK IS TALKING ABOUT:\n{titles or '(nothing relevant found)'}\n\n"
         "Plan today's post. Return JSON:\n"
         '{\n'
@@ -862,6 +1054,9 @@ _BANNED_REVIEW_PHRASES = [
     # Generic journalist/LLM voice — no thesis account writes this way
     "this suggests", "further reinforces", "this notion", "this indicates",
     "this implies", "we can observe", "it is evident", "this demonstrates",
+    # Exact repetitive formulae that kill credibility — HARD BLOCKS
+    "that's the close", "that is the close", "here's what nobody wants to say",
+    "here's what no one wants to say", "here's the thing", "the thing is",
 ]
 
 # At least one must appear in a post — hard gate, not LLM-scored
@@ -1137,6 +1332,7 @@ def build_context(
     headlines: list[str],
     memory: dict,
     market: dict,
+    company_profile: dict | None = None,
     mood: str = "",
     zitron: dict | None = None,
     earnings_context: str | None = None,
@@ -1146,6 +1342,7 @@ def build_context(
     macro_calendar: str = "",
     macro_commentary: str = "",
     past_research: list[dict] | None = None,
+    extended_fundamentals: dict | None = None,
 ) -> str:
     chg = price["change_pct"]
     direction = "DOWN" if chg < 0 else "UP"
@@ -1178,6 +1375,42 @@ def build_context(
         market_lines.append(f"S&P 500: {spy:+.2f}% today (NVDA {sign}{vs}% vs market)")
 
     market_block = ("\n" + "\n".join(f"- {l}" for l in market_lines)) if market_lines else ""
+
+    company_lines = []
+    if company_profile:
+        if company_profile.get("market_cap") is not None:
+            company_lines.append(f"Market cap: ${company_profile['market_cap']}B")
+        if company_profile.get("forwardPE") is not None:
+            company_lines.append(f"Forward P/E: {company_profile['forwardPE']}")
+        if company_profile.get("trailingPE") is not None:
+            company_lines.append(f"Trailing P/E: {company_profile['trailingPE']}")
+        if company_profile.get("grossMargins") is not None:
+            company_lines.append(f"Gross margin: {company_profile['grossMargins'] * 100:.1f}%")
+        if company_profile.get("profitMargins") is not None:
+            company_lines.append(f"Profit margin: {company_profile['profitMargins'] * 100:.1f}%")
+        if company_profile.get("revenueGrowth") is not None:
+            company_lines.append(f"Revenue growth: {company_profile['revenueGrowth'] * 100:.1f}%")
+        if company_profile.get("earningsQuarterlyGrowth") is not None:
+            company_lines.append(f"Earnings growth: {company_profile['earningsQuarterlyGrowth'] * 100:.1f}%")
+        if company_profile.get("beta") is not None:
+            company_lines.append(f"Beta: {company_profile['beta']}")
+    company_block = ("\n" + "\n".join(f"- {l}" for l in company_lines)) if company_lines else ""
+
+    extended_block = ""
+    if extended_fundamentals:
+        ext_lines = []
+        if extended_fundamentals.get("close_vs_ma20") is not None:
+            ext_lines.append(f"Price vs 20-day MA: {extended_fundamentals['close_vs_ma20']:+.1f}%")
+        if extended_fundamentals.get("close_vs_ma50") is not None:
+            ext_lines.append(f"Price vs 50-day MA: {extended_fundamentals['close_vs_ma50']:+.1f}%")
+        if extended_fundamentals.get("volatility_20d") is not None:
+            ext_lines.append(f"20-day volatility: {extended_fundamentals['volatility_20d']:.1f}%")
+        if extended_fundamentals.get("updays_last_10") is not None:
+            ext_lines.append(f"Up days (last 10): {extended_fundamentals['updays_last_10']}/10")
+        if extended_fundamentals.get("target_mean_price") is not None:
+            ext_lines.append(f"Analyst target mean: ${extended_fundamentals['target_mean_price']}")
+        if ext_lines:
+            extended_block = "\nTECHNICAL & TREND:\n" + "\n".join(f"- {l}" for l in ext_lines)
 
     history = memory.get("price_history", [])
     trend_block = ""
@@ -1255,8 +1488,13 @@ def build_context(
         for r in past_research[:2]:
             meta = r.get("metadata", {})
             title = meta.get("title", "").strip()
+            summary = (r.get("metadata", {}).get("summary") or r.get("data") or "").strip()
             if title:
-                items.append(f"- {title}")
+                snippet = summary.split(". ")[0][:160].strip()
+                if snippet:
+                    items.append(f"- {title}: {snippet}.")
+                else:
+                    items.append(f"- {title}")
         if items:
             research_archive_block = (
                 "\n\nTHEMATIC ARCHIVE — past research that resonates with today's angle "
@@ -1269,6 +1507,8 @@ def build_context(
         f"Close: ${price['price']} ({direction} {abs(chg):.2f}% from prev close ${price['prev_close']})\n"
         f"As of: {price['as_of']}"
         f"{market_block}"
+        f"{company_block}"
+        f"{extended_block}"
         f"{trend_block}"
         f"{earnings_block}"
         f"{mood_block}\n"
@@ -1310,19 +1550,32 @@ def generate_rant(context: str, soul: str) -> str:
         "  Deploy deliberately. One lands harder than five.\n"
         "- Call Jensen Huang 'the leather jacket charlatan' at least once if referencing him.\n"
         "- Declarative sentences. Let numbers hit before commentary. Short sentences land.\n\n"
-        "WHAT MAKES A GOOD POST (pick your own form — no template):\n"
-        "- Open cold on a number. '$X. That's the close. Here's what nobody wants to say about it.'\n"
-        "- Or open on the thesis confirmation/crack. Lead with whether the bear was right today.\n"
-        "- Or open with a specific headline that tells you something the price doesn't.\n"
-        "- Weave in the posting plan's angle and tone. Make it feel like a person with a running view.\n\n"
+        "OPENING PATTERNS — MUST VARY (rotation enforced):\n"
+        "Pick ONE distinct opener below each time. Rotate them. NEVER repeat the same structure.\n"
+        "  🔴 DO NOT USE THESE (bot-detector phrases):\n"
+        "    × '$X. That's the close. Here's what nobody wants to say...'"
+        "    × 'Here's the thing...'"
+        "    × '$X. Here's why...'"
+        "    × Fixed two-step: [price] + [canned transition]"
+        "\n"
+        "  ✅ USE THESE INSTEAD (rotate between types):\n"
+        "    A) THESIS CONFIRMATION: 'Volume cracked 40% above avg on the red day — that pattern shows up before capex cuts.'"
+        "    B) HEADLINE FIRST: 'Blackwell demand number just landed and here's what it actually means for the P/E...'"
+        "    C) TECHNICAL: '$212 — below yesterday's open but above the 20-day mean. The bears have control.'"
+        "    D) CONTRARIAN: 'Everyone's talking about earnings. Nobody's talking about the $4.8B in insider sales.'"
+        "    E) FORWARD-LOOKING: 'When hyperscalers blink on capex (and they will), multiple compression will be instant.'"
+        "\n"
         "HARD REQUIREMENTS:\n"
         "- At least 2 specific numbers from the data block (price, %, volume ratio, distance from 52w high, SPY comparison, etc.)\n"
         "- At least one domain term: capex, forward P/E, multiple compression, gross margin, "
         "guidance, inference, hyperscaler, capex cycle, valuation, cost per token\n"
         "- Volume read: BELOW average on a down day = low conviction move. "
         "ABOVE average on a down day = that's the distribution signal.\n"
-        "- No banned AI phrases: 'this suggests', 'this indicates', 'further reinforces', "
-        "'this notion', 'it's important to note', 'as we can see'\n\n"
+        "- NO banned phrases. Full list enforced: 'this suggests', 'indicates', 'that's the close', 'here's the thing', etc.\n\n"
+        "CLOSING VARIATION:\n"
+        "- End with a concise, original sign-off (one sentence) — a creative closing line that feels natural to the persona.\n"
+        "  Examples: 'Keep your puts warm.', 'Don't buy the narrative.', 'Tendies? Not today.', 'The thesis holds.', 'Draw your own line.'"
+        "  Avoid reusing the same closing across consecutive posts. Different post = different ending.\n\n"
         "Under 150 words. One emoji maximum — earn it. "
         "Do not write a post that could have been written any other day."
     )
@@ -1601,15 +1854,26 @@ def main():
     social_posts = fetch_social_context()
     print(f"  found {len(social_posts)} relevant posts on Moltbook")
 
-    # Semantic argument dedup — query vector store with today's social context before planning
+    print(f"\n[{_now_et().isoformat()}] Fetching market data for planning...")
+    price = get_nvda_price()
+    market = get_market_context()
+    company_profile = get_nvda_profile()
+    extended_fundamentals = get_nvda_extended_fundamentals()
+    headlines = get_nvda_news()
+    print(f"  price: ${price['price']} ({price['change_pct']:+.2f}%)")
+    print(f"  market context: {market}")
+    if company_profile:
+        cp_summary = ", ".join(
+            f"{k}:{v}" for k, v in company_profile.items() if k in {"market_cap", "forwardPE", "trailingPE", "revenueGrowth", "grossMargins"}
+        )
+        print(f"  company profile: {cp_summary}")
+
     semantic_past_args: list[str] = []
     if _VECTOR_AVAILABLE:
         try:
-            social_summary = " ".join(
-                p.get("title", "")[:80] for p in social_posts[:5] if p.get("title")
-            )
-            if social_summary:
-                raw = query_similar_arguments(social_summary, top_k=5)
+            semantic_query = build_semantic_query(social_posts, price=price, market=market, headlines=headlines)
+            if semantic_query:
+                raw = query_similar_arguments(semantic_query, top_k=7)
                 semantic_past_args = extract_similar_argument_texts(raw)
                 if semantic_past_args:
                     print(f"  [vector] {len(semantic_past_args)} semantically similar past arg(s) flagged")
@@ -1625,6 +1889,10 @@ def main():
         call_tracker=memory.get("call_tracker"),
         last_post_id=memory.get("post_id"),
         semantic_past_args=semantic_past_args or None,
+        price=price,
+        market=market,
+        company_profile=company_profile,
+        headlines=headlines,
     )
     print(f"  angle: {plan.get('new_angle', '(none)')[:80]}")
     print(f"  tone: {plan.get('tone', 'patient')}")
@@ -1698,14 +1966,18 @@ def main():
         except Exception as e:
             print(f"  [vector] research query failed: {e}")
 
-    context = build_context(price, headlines, memory, market, plan.get("tone", ""), zitron,
+    context = build_context(price, headlines, memory, market, 
+                            company_profile=company_profile,
+                            mood=plan.get("tone", ""),
+                            zitron=zitron,
                             earnings_context=earnings_context,
                             market_headlines=market_headlines,
                             catalyst_assessment=catalyst_assessment,
                             plan=plan,
                             macro_calendar=macro_calendar,
                             macro_commentary=macro_commentary,
-                            past_research=past_research or None)
+                            past_research=past_research or None,
+                            extended_fundamentals=extended_fundamentals)
     print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
