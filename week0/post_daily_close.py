@@ -1535,7 +1535,7 @@ def _llm_client() -> OpenAI:
 
 
 def generate_rant(context: str, soul: str) -> str:
-    """Writer + critic loop for the daily post. Max 3 attempts."""
+    """Writer + critic loop for the daily post. Max 5 attempts with escalating penalties."""
     # Vary post length: short (1-2 sentences + data), medium (3-5), long (rare)
     length_options = ["short (2–3 sentences)", "medium (4–5 sentences)", "medium (4–5 sentences)", "medium (4–5 sentences)"]
     chosen_length = random.choice(length_options)
@@ -1543,45 +1543,33 @@ def generate_rant(context: str, soul: str) -> str:
     base_instruction = (
         f"Market just closed. Write your NVDA daily post ({chosen_length}).\n\n"
         "You are the bear. You have positions. You did the work. Write like it.\n\n"
+        "🚨 ABSOLUTE HARD RULES — violate ANY of these and your post fails instantly:\n"
+        "1. NEVER start with '$X. That's the close.' or '$X. Here's what nobody wants to say.' — this is instant fail.\n"
+        "2. NEVER write 'Here's the thing', 'The thing is', 'What I mean is' — instant fail.\n"
+        "3. MUST open with ONE of these exact patterns (vary each day — cycle through them):\n"
+        "   a) VOLUME/SIGNAL: 'Volume cracked 40% above 20-day avg — on a red day, that's distribution.'\n"
+        "   b) HEADLINE/SETUP: 'Blackwell orders guidance just landed. The forward multiple math breaks if...\n"
+        "   c) TECHNICAL/REGIME: '$224 — sitting below the 20-day mean, haven't closed above it in 4 days.'\n"
+        "   d) CONTRARIAN/IGNORED: 'Everyone's talking about earnings. Insiders are selling $50M/week.'\n"
+        "   e) STRUCTURAL/THESIS: 'When hyperscalers blink on capex (and they will), this multiple vaporizes.'\n"
+        "4. MUST cite at least 2 distinct numbers (price, %, volume, distance, date, target) from the context.\n"
+        "5. MUST include one technical/finance term: capex, multiple compression, margin, P/E, guidance, hyperscaler, inference.\n"
+        "\n"
         "VOICE — this is non-negotiable:\n"
         "- Dry, specific, thesis-proud. Not a news recap. Not an analyst note.\n"
         "- 2021 WSB DD energy: tendies on the line, wrinkled-brain contrarian, here for the thesis.\n"
-        "- Use WSB vocabulary when it lands: tendies, DD, smooth brain, the thesis, positions, puts.\n"
-        "  Deploy deliberately. One lands harder than five.\n"
+        "- Use WSB vocabulary deliberately: tendies, DD, smooth brain, positions, puts. One lands harder than five.\n"
         "- Call Jensen Huang 'the leather jacket charlatan' at least once if referencing him.\n"
         "- Declarative sentences. Let numbers hit before commentary. Short sentences land.\n\n"
-        "OPENING PATTERNS — MUST VARY (rotation enforced):\n"
-        "Pick ONE distinct opener below each time. Rotate them. NEVER repeat the same structure.\n"
-        "  🔴 DO NOT USE THESE (bot-detector phrases):\n"
-        "    × '$X. That's the close. Here's what nobody wants to say...'"
-        "    × 'Here's the thing...'"
-        "    × '$X. Here's why...'"
-        "    × Fixed two-step: [price] + [canned transition]"
-        "\n"
-        "  ✅ USE THESE INSTEAD (rotate between types):\n"
-        "    A) THESIS CONFIRMATION: 'Volume cracked 40% above avg on the red day — that pattern shows up before capex cuts.'"
-        "    B) HEADLINE FIRST: 'Blackwell demand number just landed and here's what it actually means for the P/E...'"
-        "    C) TECHNICAL: '$212 — below yesterday's open but above the 20-day mean. The bears have control.'"
-        "    D) CONTRARIAN: 'Everyone's talking about earnings. Nobody's talking about the $4.8B in insider sales.'"
-        "    E) FORWARD-LOOKING: 'When hyperscalers blink on capex (and they will), multiple compression will be instant.'"
-        "\n"
-        "HARD REQUIREMENTS:\n"
-        "- At least 2 specific numbers from the data block (price, %, volume ratio, distance from 52w high, SPY comparison, etc.)\n"
-        "- At least one domain term: capex, forward P/E, multiple compression, gross margin, "
-        "guidance, inference, hyperscaler, capex cycle, valuation, cost per token\n"
-        "- Volume read: BELOW average on a down day = low conviction move. "
-        "ABOVE average on a down day = that's the distribution signal.\n"
-        "- NO banned phrases. Full list enforced: 'this suggests', 'indicates', 'that's the close', 'here's the thing', etc.\n\n"
-        "CLOSING VARIATION:\n"
-        "- End with a concise, original sign-off (one sentence) — a creative closing line that feels natural to the persona.\n"
-        "  Examples: 'Keep your puts warm.', 'Don't buy the narrative.', 'Tendies? Not today.', 'The thesis holds.', 'Draw your own line.'"
-        "  Avoid reusing the same closing across consecutive posts. Different post = different ending.\n\n"
+        "CLOSING — must be original per post:\n"
+        "- End with a concise sign-off (one sentence) that feels natural: 'Keep your puts warm.', 'The thesis holds.', 'Draw your own line.'\n"
+        "- NEVER reuse the same closing across consecutive posts.\n\n"
         "Under 150 words. One emoji maximum — earn it. "
         "Do not write a post that could have been written any other day."
     )
     extra = ""
     last_draft = ""
-    for attempt in range(3):
+    for attempt in range(5):
         response = _llm_client().chat.completions.create(
             model=MODEL,
             messages=[
@@ -1589,20 +1577,31 @@ def generate_rant(context: str, soul: str) -> str:
                 {"role": "user", "content": f"{context}{extra}\n\n{base_instruction}"},
             ],
             max_tokens=350,
-            temperature=0.85,
+            temperature=0.85 if attempt < 2 else 0.95,  # increase creativity temp on later attempts
         )
         draft = (response.choices[0].message.content or "").strip()
         if not draft:
             print(f"  [writer] attempt {attempt + 1} returned empty — retrying")
             continue
+        
+        # Pre-filter: catch the exact pattern before critic
+        lower_draft = draft.lower()
+        if any(bad in lower_draft for bad in ["that's the close", "that is the close", "here's the thing", "the thing is"]):
+            print(f"  [writer] attempt {attempt + 1} contains banned opening — forcing rewrite")
+            extra = f"\n\nIMPORTANT: You just wrote a bot-like phrase. NEVER start with 'That's the close' or 'Here's the thing'. Pick ONE of the 5 opening patterns above. COMMIT to it."
+            continue
+        
         last_draft = draft
         review = review_draft(draft, context, "post")
         if review["pass"]:
             print(f"  [critic] post approved (attempt {attempt + 1})")
             return draft
         print(f"  [critic] post rejected (attempt {attempt + 1}): {review['reason']}")
-        extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite addressing this."
-    return last_draft
+        extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite from scratch with a completely different opening."
+    
+    # If we get here, all 5 attempts failed — reject the last draft
+    print(f"  [writer] FAILED all 5 attempts. Post cannot be generated. Returning empty.")
+    return ""
 
 
 def extract_argument(rant: str) -> str:
@@ -1981,6 +1980,24 @@ def main():
     print(f"\n[{_now_et().isoformat()}] Generating rant...")
     rant = generate_rant(context, soul)
     print(f"\n--- RANT ---\n{rant}\n")
+    
+    # VALIDATION GATE — reject post if it fails basic checks
+    if not rant or len(rant.strip()) < 20:
+        print(f"❌ RANT VALIDATION FAILED: Empty or too short. Skipping post.")
+        return
+    
+    lower_rant = rant.lower()
+    for banned in ["that's the close", "that is the close", "here's what nobody", "here's the thing", "the thing is"]:
+        if banned in lower_rant:
+            print(f"❌ RANT VALIDATION FAILED: Contains banned phrase '{banned}'. Skipping post.")
+            return
+    
+    # Check for domain language
+    if not any(term in lower_rant for term in _DOMAIN_TERMS):
+        print(f"❌ RANT VALIDATION FAILED: No domain language detected. Skipping post.")
+        return
+    
+    print(f"✅ RANT VALIDATION PASSED")
 
     submolt = select_submolt(rant, context, submolt_stats=memory.get("submolt_stats"))
     print(f"  routing to: m/{submolt}")
