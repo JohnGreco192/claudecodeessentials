@@ -1075,7 +1075,7 @@ def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
     Defaults to pass on any parsing failure so the critic never blocks silently.
     """
     # Fast pre-check: banned AI phrases are an instant reject
-    lower = draft.lower()
+    lower = draft.lower().replace("’", "'").replace("‘", "'")
     for phrase in _BANNED_REVIEW_PHRASES:
         if phrase in lower:
             return {
@@ -1133,6 +1133,66 @@ def review_draft(draft: str, context: str, draft_type: str = "post") -> dict:
     except Exception:
         pass
     return {"pass": True, "reason": "critic unavailable", "suggestion": ""}
+
+
+def _passes_basic_rant_checks(draft: str) -> bool:
+    lower = draft.lower().replace("’", "'").replace("‘", "'")
+    if any(bad in lower for bad in [
+        "that's the close", "that is the close", "thats the close",
+        "here's the thing", "heres the thing", "what i mean is",
+        "here's what nobody wants", "here's what no one wants"
+    ]):
+        return False
+    if not any(term in lower for term in _DOMAIN_TERMS):
+        return False
+    numbers = re.findall(r"\d+(?:\.\d+)?", draft)
+    if len(numbers) < 2:
+        return False
+    if len(draft.strip()) < 60:
+        return False
+    return True
+
+
+def generate_fallback_rant(context: str, soul: str) -> str:
+    """Fallback writer when the main prompt fails — leaner, still avoid the bad template."""
+    prompt = (
+        "Fallback mode: write a short NVDA daily close post using only the verified data block.\n\n"
+        "Requirements:\n"
+        "- Under 120 words.\n"
+        "- Avoid 'That's the close', 'Here's what nobody wants to say', 'Here's the thing'.\n"
+        "- Use at least 2 distinct numbers from today's data block.\n"
+        "- Include at least one finance term: capex, forward P/E, multiple compression, margin, guidance, hyperscaler, inference.\n"
+        "- Use the context as your only source. Do not invent prices or headlines.\n"
+        "- Add a tight, original closing line: 'Keep your puts warm.', 'Don't buy the narrative.', 'The thesis holds.'\n"
+    )
+    try:
+        resp = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": soul},
+                {"role": "user", "content": f"{context}\n\n{prompt}"},
+            ],
+            max_tokens=300,
+            temperature=0.6,
+        )
+        draft = (resp.choices[0].message.content or "").strip()
+        if not draft:
+            print("  [fallback] empty fallback draft")
+            return ""
+        if not _passes_basic_rant_checks(draft):
+            print("  [fallback] draft failed basic checks")
+            return ""
+        review = review_draft(draft, context, "post")
+        if review["pass"]:
+            print("  [fallback] accepted by critic")
+            return draft
+        print(f"  [fallback] critic rejected: {review['reason']}")
+        if _passes_basic_rant_checks(draft):
+            print("  [fallback] accepting by basic checks despite critic rejection")
+            return draft
+    except Exception as e:
+        print(f"  [fallback] failed: {e}")
+    return ""
 
 
 def select_submolt(rant: str, context: str,
@@ -1599,8 +1659,12 @@ def generate_rant(context: str, soul: str) -> str:
         print(f"  [critic] post rejected (attempt {attempt + 1}): {review['reason']}")
         extra = f"\n\nCRITIC FEEDBACK: {review['suggestion']} — rewrite from scratch with a completely different opening."
     
-    # If we get here, all 5 attempts failed — reject the last draft
-    print(f"  [writer] FAILED all 5 attempts. Post cannot be generated. Returning empty.")
+    # If we get here, all 5 attempts failed — try a simpler fallback
+    print(f"  [writer] all 5 hard attempts failed. Trying fallback path.")
+    fallback = generate_fallback_rant(context, soul)
+    if fallback:
+        return fallback
+    print(f"  [writer] FAILED all 5 attempts and fallback. Returning empty.")
     return ""
 
 
