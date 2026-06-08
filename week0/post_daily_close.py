@@ -2060,7 +2060,50 @@ def _extract_post_id(result: dict) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def retry_pending_verifications():
+    """Read MEMORY.md for pending_verification markers and attempt to solve them.
+    This is a best-effort helper for operators to retry verifications without re-posting.
+    """
+    try:
+        with open(MEMORY_PATH, "r+") as f:
+            content = f.read()
+    except Exception as e:
+        print(f"  [retry] unable to read MEMORY.md: {e}")
+        return
+    pending = re.findall(r"pending_verification:\s*(\S+)\s*\|\s*post:(\S+)", content)
+    if not pending:
+        print("  [retry] no pending verifications found in MEMORY.md")
+        return
+    print(f"  [retry] found {len(pending)} pending verification(s)")
+    for vc, post_id in pending:
+        try:
+            print(f"  [retry] fetching post {post_id} for verification {vc}")
+            r = requests.get(f"{MOLTBOOK_BASE}/posts/{post_id}", headers=_headers(), timeout=10)
+            if r.status_code != 200:
+                print(f"  [retry] failed to fetch post {post_id}: {r.status_code} {r.text[:120]}")
+                continue
+            jr = r.json()
+            verification = jr.get("verification") or jr.get("post", {}).get("verification")
+            if not verification:
+                print(f"  [retry] no verification object on post {post_id}")
+                continue
+            solved = _solve_verification(verification)
+            if solved:
+                # remove pending marker from MEMORY.md
+                new_content = re.sub(rf"- pending_verification: {re.escape(vc)} \| post:{re.escape(post_id)}\n?", "", content)
+                try:
+                    with open(MEMORY_PATH, "w") as f:
+                        f.write(new_content)
+                    content = new_content
+                    print(f"  [retry] cleared pending marker for {post_id}")
+                except Exception as e:
+                    print(f"  [retry] could not update MEMORY.md: {e}")
+        except Exception as e:
+            print(f"  [retry] error handling {vc} {post_id}: {e}")
+
+
 def main():
+
     is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
 
     # Random 5–60 min startup delay + 15% skip are for scheduled runs only.
