@@ -2103,9 +2103,12 @@ def retry_pending_verifications():
 
 
 def main():
+    # Operator convenience: if RETRY_PENDING is set to true, attempt to resolve pending verifications
+    if os.environ.get("RETRY_PENDING", "").lower() in ("true", "1", "yes"):
+        retry_pending_verifications()
+        return
 
     is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
-
     # Random 5–60 min startup delay + 15% skip are for scheduled runs only.
     # Manual workflow_dispatch (SKIP_STARTUP_DELAY=true) bypasses both so testing always fires.
     if is_manual:
