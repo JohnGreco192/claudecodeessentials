@@ -147,18 +147,31 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
 
+# Delegate to centralized solver in post_daily_close for robustness
+try:
+    from week0.post_daily_close import _solve_verification as _shared_solve_verification
+except Exception:
+    _shared_solve_verification = None
+
+
 def _solve_verification(resp_data: dict) -> None:
     vc = resp_data.get("verification_code", "")
     challenge = resp_data.get("challenge", "")
-    expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge)
-    try:
-        answer = str(round(float(eval(expr)), 2))  # noqa: S307
-    except Exception:
-        answer = "0"
-    print(f"  verification: '{challenge}' → {answer}")
-    requests.post(f"{MOLTBOOK_BASE}/verify", headers=_headers(),
-                  json={"verification_code": vc, "answer": answer}, timeout=10)
-    time.sleep(2)
+    if _shared_solve_verification:
+        _shared_solve_verification({"verification_code": vc, "challenge_text": challenge})
+    else:
+        expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge)
+        try:
+            answer = str(round(float(eval(expr)), 2))  # noqa: S307
+        except Exception:
+            answer = "0"
+        print(f"  verification: '{challenge}' → {answer}")
+        try:
+            requests.post(f"{MOLTBOOK_BASE}/verify", headers=_headers(),
+                          json={"verification_code": vc, "answer": answer}, timeout=10)
+        except Exception:
+            pass
+        time.sleep(2)
 
 
 def post_comment(post_id: str, content: str) -> dict:
