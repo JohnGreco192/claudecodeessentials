@@ -1777,69 +1777,231 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
 
-def _solve_verification(verification: dict) -> None:
+def _solve_verification(verification: dict) -> bool:
+    """Attempt to solve and submit verification. Returns True if verification succeeded."""
     vc = verification.get("verification_code", "")
     challenge = verification.get("challenge_text") or verification.get("challenge", "")
     if not vc or not challenge:
         print("  [verify] missing code or challenge — skipping")
-        return
+        return False
 
-    answer: str | None = None
+    def words_to_num(text: str) -> int:
+        ones = {
+            'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9
+        }
+        teens = {
+            'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+            'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19
+        }
+        tens = {
+            'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50,
+            'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90
+        }
+        scales = {'hundred': 100, 'thousand': 1000, 'million': 1000000}
 
-    # Try simple arithmetic first (strips obfuscation chars, evals the expression)
+        tokens = [t for t in re.split(r"[\s-]+", text.lower()) if t]
+        total = 0
+        current = 0
+        for t in tokens:
+            if t in ones:
+                current += ones[t]
+            elif t in teens:
+                current += teens[t]
+            elif t in tens:
+                current += tens[t]
+            elif t == 'hundred':
+                if current == 0:
+                    current = 100
+                else:
+                    current *= 100
+            elif t in ('thousand', 'million'):
+                mult = scales.get(t, 1000)
+                if current == 0:
+                    total += mult
+                else:
+                    total += current * mult
+                current = 0
+            else:
+                # Not a number word
+                continue
+        return total + current
+
+    candidates: list[str] = []
+
+    # 1) Try direct digit expression (if operators present)
     expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge).strip()
-    try:
-        val = float(eval(expr))  # noqa: S307
-        if expr:
-            answer = f"{val:.2f}"
-    except Exception:
-        pass
+    if expr and re.search(r"[+\-*/]", expr):
+        try:
+            val = float(eval(expr))  # noqa: S307
+            candidates.append(f"{val:.2f}")
+        except Exception:
+            pass
 
-    # Fall back to LLM for obfuscated word problems
-    if not answer or answer == "0.00":
-        # Strip punctuation/symbols, keep letters+digits+spaces so the model can read phonetically
-        readable = re.sub(r"[^a-zA-Z0-9\s]", " ", challenge).strip()
+    # 2) Try to detect explicit 'multiplied by', 'times', 'x', 'divided by', 'plus', 'minus'
+    readable = re.sub(r"[^a-zA-Z0-9\s]", " ", challenge).lower()
+    # Find numeric tokens (digits)
+    digit_nums = [int(m) for m in re.findall(r"\d+", readable)]
+
+    # Find contiguous number-word sequences
+    number_word_list = []
+    number_word_tokens = set([
+        'zero','one','two','three','four','five','six','seven','eight','nine',
+        'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
+        'twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety',
+        'hundred','thousand','million'
+    ])
+    tokens = readable.split()
+    i = 0
+    while i < len(tokens):
+        if tokens[i] in number_word_tokens:
+            j = i
+            while j < len(tokens) and tokens[j] in number_word_tokens:
+                j += 1
+            phrase = " ".join(tokens[i:j])
+            try:
+                val = words_to_num(phrase)
+                number_word_list.append((val, i, j))
+            except Exception:
+                pass
+            i = j
+        else:
+            i += 1
+
+    # Build numeric sequence preserving order
+    numeric_sequence: list[int] = []
+    # merge digit_nums and number_word_list by positions — easier: find all digits with spans
+    digit_spans = []
+    for m in re.finditer(r"\d+", readable):
+        digit_spans.append((int(m.group()), m.start(), m.end()))
+    # collect both kinds by start index
+    items = []
+    for v, s, e in number_word_list:
+        items.append((s, v))
+    for v, s, e in digit_spans:
+        items.append((s, v))
+    items.sort()
+    numeric_sequence = [v for s, v in items]
+
+    op_mul = re.search(r"(multiplied|times|\b\b\bx\b\b|\*)", readable)
+    op_div = re.search(r"(divided|\/|over)", readable)
+    op_add = re.search(r"(plus|add|sum|and)", readable)
+    op_sub = re.search(r"(minus|subtract|less)", readable)
+
+    if op_mul and len(numeric_sequence) >= 2:
+        prod = numeric_sequence[0] * numeric_sequence[1]
+        candidates.append(f"{prod:.2f}")
+    elif op_div and len(numeric_sequence) >= 2:
+        try:
+            res = numeric_sequence[0] / numeric_sequence[1]
+            candidates.append(f"{res:.2f}")
+        except Exception:
+            pass
+    elif op_add and len(numeric_sequence) >= 2:
+        s = sum(numeric_sequence[:2])
+        candidates.append(f"{s:.2f}")
+    elif op_sub and len(numeric_sequence) >= 2:
+        s = numeric_sequence[0] - numeric_sequence[1]
+        candidates.append(f"{s:.2f}")
+
+    # 3) Try specific regex like '(<num word|digit>) multiplied by (<num word|digit>)'
+    m = re.search(r"([a-z0-9\s-]+?)\s*(?:multiplied by|times|x|\*)\s*([a-z0-9\s-]+?)\b", readable)
+    if m:
+        left, right = m.group(1).strip(), m.group(2).strip()
+        try:
+            val_l = int(re.search(r"\d+", left).group()) if re.search(r"\d+", left) else words_to_num(left)
+            val_r = int(re.search(r"\d+", right).group()) if re.search(r"\d+", right) else words_to_num(right)
+            candidates.append(f"{(val_l * val_r):.2f}")
+        except Exception:
+            pass
+
+    # 4) LLM fallback with a more explicit prompt (ask for numeric answer and the operation used)
+    if not candidates:
+        readable_short = (readable[:400] + "...") if len(readable) > 400 else readable
         try:
             resp = _llm_client().chat.completions.create(
                 model=MODEL,
-                messages=[{"role": "user", "content": (
-                    "Solve this math word problem. The text uses mixed case but the words are real — "
-                    "read it normally. Reply with ONLY the numeric answer, 2 decimal places, nothing else. "
-                    "Example reply: '65.00'\n\n"
-                    f"Problem: {readable}"
-                )}],
-                max_tokens=20,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Solve this math challenge. Return ONLY the numeric answer with 2 decimal places, and on the next line, the operation you used (e.g., 'multiply').\n\n"
+                        f"Challenge: {readable_short}"
+                    )
+                }],
+                max_tokens=40,
                 temperature=0,
             )
             text = (resp.choices[0].message.content or "").strip()
-            m = re.search(r"\d+(?:\.\d+)?", text)
+            m = re.search(r"(-?\d+(?:\.\d+)?)", text)
             if m:
-                answer = f"{float(m.group()):.2f}"
+                candidates.append(f"{float(m.group()):.2f}")
         except Exception as e:
-            print(f"  [verify] LLM solve failed: {e}")
+            print(f"  [verify] LLM fallback failed: {e}")
 
-    # Always send a string — never None
-    answer = answer or "0.00"
-    print(f"  [verify] challenge: '{challenge[:80]}' → {answer}")
-    try:
-        r = requests.post(
-            f"{MOLTBOOK_BASE}/verify", headers=_headers(),
-            json={"verification_code": vc, "answer": answer}, timeout=10,
-        )
-        print(f"  [verify] status: {r.status_code} {r.text[:120]}")
-    except Exception as e:
-        print(f"  [verify] submit failed: {e}")
-    time.sleep(2)
+    # Deduplicate while preserving order
+    seen = set()
+    unique_candidates = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique_candidates.append(c)
+
+    if not unique_candidates:
+        unique_candidates = ["0.00"]
+
+    # Try submitting candidates until one is accepted
+    for ans in unique_candidates[:5]:
+        print(f"  [verify] trying answer: {ans}")
+        try:
+            r = requests.post(
+                f"{MOLTBOOK_BASE}/verify", headers=_headers(),
+                json={"verification_code": vc, "answer": ans}, timeout=10,
+            )
+            status_info = f"{r.status_code} {r.text[:120]}"
+            print(f"  [verify] status: {status_info}")
+            # Success heuristics: 200/201 and response indicates success
+            if r.status_code in (200, 201):
+                try:
+                    jr = r.json()
+                    if jr.get("success") or jr.get("statusCode") in (200, 201) or "success" in jr.get("message", "").lower():
+                        print("  [verify] accepted")
+                        time.sleep(1)
+                        return True
+                except Exception:
+                    # Non-JSON success — treat 200 as success
+                    print("  [verify] accepted (non-json 200)")
+                    time.sleep(1)
+                    return True
+        except Exception as e:
+            print(f"  [verify] submit failed: {e}")
+        time.sleep(1)
+
+    print("  [verify] all attempts failed — leaving post pending")
+    return False
 
 
 def _post_with_verification(url: str, payload: dict) -> dict:
     resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
-    data = resp.json()
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"success": False, "raw": resp.text}
     # Challenge lives inside data["post"]["verification"] or data["verification"]
     post_obj = data.get("post", data)
     verification = post_obj.get("verification") or data.get("verification")
     if verification:
-        _solve_verification(verification)
+        solved = _solve_verification(verification)
+        if not solved:
+            # Persist verification metadata in MEMORY.md so future runs can retry (best-effort)
+            try:
+                with open(MEMORY_PATH, "r+") as f:
+                    content = f.read()
+                    marker = f"\n- pending_verification: {verification.get('verification_code')} | post:{post_obj.get('id') or post_obj.get('post_id')}\n"
+                    if "pending_verification" not in content:
+                        f.write(marker)
+                        print("  [verify] persisted pending verification in MEMORY.md")
+            except Exception:
+                pass
     return data
 
 
