@@ -1888,21 +1888,39 @@ def _solve_verification(verification: dict) -> bool:
     op_add = re.search(r"(plus|add|sum|and)", readable)
     op_sub = re.search(r"(minus|subtract|less)", readable)
 
-    if op_mul and len(numeric_sequence) >= 2:
-        prod = numeric_sequence[0] * numeric_sequence[1]
-        candidates.append(f"{prod:.2f}")
-    elif op_div and len(numeric_sequence) >= 2:
+    if len(numeric_sequence) >= 2:
+        # Try a variety of plausible operations between the first two numbers
+        a, b = numeric_sequence[0], numeric_sequence[1]
+        # multiplication/division/add/sub
+        candidates.append(f"{(a * b):.2f}")
         try:
-            res = numeric_sequence[0] / numeric_sequence[1]
-            candidates.append(f"{res:.2f}")
+            candidates.append(f"{(a / b):.2f}")
         except Exception:
             pass
-    elif op_add and len(numeric_sequence) >= 2:
-        s = sum(numeric_sequence[:2])
-        candidates.append(f"{s:.2f}")
-    elif op_sub and len(numeric_sequence) >= 2:
-        s = numeric_sequence[0] - numeric_sequence[1]
-        candidates.append(f"{s:.2f}")
+        candidates.append(f"{(a + b):.2f}")
+        candidates.append(f"{(a - b):.2f}")
+        candidates.append(f"{(b - a):.2f}")
+        # absolute difference
+        candidates.append(f"{(abs(a - b)):.2f}")
+        # try ops inferred from keywords if present
+        if op_mul:
+            candidates.insert(0, f"{(a * b):.2f}")
+        if op_div:
+            try:
+                candidates.insert(0, f"{(a / b):.2f}")
+            except Exception:
+                pass
+        if op_add:
+            candidates.insert(0, f"{(a + b):.2f}")
+        if op_sub:
+            candidates.insert(0, f"{(a - b):.2f}")
+    else:
+        # If only a single numeric token or number-word phrase found, try it as-is
+        if numeric_sequence:
+            candidates.append(f"{numeric_sequence[0]:.2f}")
+        elif number_word_list:
+            # use the first parsed word-number
+            candidates.append(f"{number_word_list[0][0]:.2f}")
 
     # 3) Try specific regex like '(<num word|digit>) multiplied by (<num word|digit>)'
     m = re.search(r"([a-z0-9\s-]+?)\s*(?:multiplied by|times|x|\*)\s*([a-z0-9\s-]+?)\b", readable)
@@ -1916,27 +1934,41 @@ def _solve_verification(verification: dict) -> bool:
             pass
 
     # 4) LLM fallback with a more explicit prompt (ask for numeric answer and the operation used)
-    if not candidates:
-        readable_short = (readable[:400] + "...") if len(readable) > 400 else readable
+    readable_short = (readable[:400] + "...") if len(readable) > 400 else readable
+    try:
+        resp = _llm_client().chat.completions.create(
+            model=MODEL,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Solve this math challenge. Return ONLY the numeric answer with 2 decimal places, and on the next line, the operation you used (e.g., 'multiply').\n\n"
+                    f"Challenge: {readable_short}"
+                )
+            }],
+            max_tokens=40,
+            temperature=0,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"(-?\d+(?:\.\d+)?)", text)
+        if m:
+            candidates.append(f"{float(m.group()):.2f}")
+    except Exception as e:
+        print(f"  [verify] LLM fallback failed: {e}")
+
+    # Normalize and expand possible answer formats (integer, one-decimal, two-decimal)
+    expanded_candidates: list[str] = []
+    for c in candidates:
         try:
-            resp = _llm_client().chat.completions.create(
-                model=MODEL,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Solve this math challenge. Return ONLY the numeric answer with 2 decimal places, and on the next line, the operation you used (e.g., 'multiply').\n\n"
-                        f"Challenge: {readable_short}"
-                    )
-                }],
-                max_tokens=40,
-                temperature=0,
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            m = re.search(r"(-?\d+(?:\.\d+)?)", text)
-            if m:
-                candidates.append(f"{float(m.group()):.2f}")
-        except Exception as e:
-            print(f"  [verify] LLM fallback failed: {e}")
+            val = float(c)
+        except Exception:
+            continue
+        # two-decimal (default)
+        expanded_candidates.append(f"{val:.2f}")
+        # one-decimal
+        expanded_candidates.append(f"{val:.1f}")
+        # integer (no decimals)
+        expanded_candidates.append(f"{int(round(val))}")
+    candidates = expanded_candidates
 
     # Deduplicate while preserving order
     seen = set()
