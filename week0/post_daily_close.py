@@ -2201,13 +2201,15 @@ def retry_and_repost_failed():
 
 
 def main():
-    # Operator convenience: if RETRY_PENDING is set to true, attempt to resolve pending verifications
+    # Operator convenience: honor both RETRY_PENDING and REPOST_FAILED if set
+    ran_something = False
     if os.environ.get("RETRY_PENDING", "").lower() in ("true", "1", "yes"):
         retry_pending_verifications()
-        return
-    # If REPOST_FAILED is set, attempt to repost failed/deleted tracked posts
+        ran_something = True
     if os.environ.get("REPOST_FAILED", "").lower() in ("true", "1", "yes"):
         retry_and_repost_failed()
+        ran_something = True
+    if ran_something:
         return
 
     is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
