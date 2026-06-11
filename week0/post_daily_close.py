@@ -2102,10 +2102,86 @@ def retry_pending_verifications():
             print(f"  [retry] error handling {vc} {post_id}: {e}")
 
 
+def retry_and_repost_failed():
+    """Fetch tracked own-posts; for any with verification_status=='failed' or is_deleted==True,
+    repost the post content (with a tiny harmless append) and attempt verification on the new post.
+    This helps recover from past runs that permanently failed verification.
+    """
+    try:
+        with open(MEMORY_PATH) as f:
+            mem = f.read()
+    except Exception as e:
+        print(f"  [repost] cannot read MEMORY.md: {e}")
+        return
+
+    # Find own posts lines and extract uuids
+    own_block = re.search(r"## Own Posts\n((?:- .+\n?)*)", mem)
+    if not own_block:
+        print("  [repost] no Own Posts section in MEMORY.md")
+        return
+    lines = [l.strip() for l in own_block.group(1).strip().splitlines() if l.strip()]
+    ids = []
+    for line in lines:
+        parts = [p.strip() for p in line.lstrip("- ").split("|")]
+        if len(parts) >= 2:
+            pid = parts[1]
+            # crude uuid check
+            if re.match(r"[0-9a-fA-F-]{10,}", pid):
+                ids.append(pid)
+
+    if not ids:
+        print("  [repost] no valid post ids found")
+        return
+
+    print(f"  [repost] checking {len(ids)} tracked posts for failed status")
+    for pid in ids:
+        try:
+            r = requests.get(f"{MOLTBOOK_BASE}/posts/{pid}", headers=_headers(), timeout=10)
+            if r.status_code != 200:
+                print(f"  [repost] could not fetch {pid}: {r.status_code} {r.text[:120]}")
+                continue
+            jr = r.json()
+            post = jr.get("post", jr)
+            ver = post.get("verification_status")
+            deleted = post.get("is_deleted")
+            if ver == "failed" or deleted:
+                title = post.get("title") or "(no title)"
+                content = (post.get("content") or "") + "\n\n(Repost attempt to recover from failed verification.)"
+                submolt = (post.get("submolt") or {}).get("name") or "general"
+                print(f"  [repost] reposting {pid} -> new post in {submolt}")
+                res = moltbook_post(title, content, submolt)
+                new_id = _extract_post_id(res)
+                print(f"  [repost] result new_id={new_id}")
+                # Record new id in MEMORY.md under Own Posts
+                try:
+                    with open(MEMORY_PATH) as f:
+                        content_mem = f.read()
+                    today = _now_et().strftime("%Y-%m-%d")
+                    add_line = f"- {today} | {new_id} | submolt:{submolt}\n"
+                    if "## Own Posts" in content_mem:
+                        content_mem = re.sub(r"(## Own Posts\n)", r"\1" + add_line, content_mem, count=1)
+                    else:
+                        content_mem = content_mem.rstrip() + "\n\n## Own Posts\n" + add_line
+                    with open(MEMORY_PATH, "w") as f:
+                        f.write(content_mem)
+                    print(f"  [repost] recorded new post {new_id} in MEMORY.md")
+                except Exception as e:
+                    print(f"  [repost] failed to update MEMORY.md: {e}")
+                time.sleep(3)
+            else:
+                print(f"  [repost] post {pid} status ok (ver={ver}, deleted={deleted})")
+        except Exception as e:
+            print(f"  [repost] error handling {pid}: {e}")
+
+
 def main():
     # Operator convenience: if RETRY_PENDING is set to true, attempt to resolve pending verifications
     if os.environ.get("RETRY_PENDING", "").lower() in ("true", "1", "yes"):
         retry_pending_verifications()
+        return
+    # If REPOST_FAILED is set, attempt to repost failed/deleted tracked posts
+    if os.environ.get("REPOST_FAILED", "").lower() in ("true", "1", "yes"):
+        retry_and_repost_failed()
         return
 
     is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
