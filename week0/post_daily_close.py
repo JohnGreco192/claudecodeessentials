@@ -1883,33 +1883,59 @@ def _solve_verification(verification: dict) -> bool:
     items.sort()
     numeric_sequence = [v for s, v in items]
 
-    op_mul = re.search(r"(multiplied|times|\b\b\bx\b\b|\*)", readable)
-    op_div = re.search(r"(divided|\/|over)", readable)
-    op_add = re.search(r"(plus|add|sum|and)", readable)
-    op_sub = re.search(r"(minus|subtract|less)", readable)
-
-    if len(numeric_sequence) >= 2:
-        # Try a variety of plausible operations between the first two numbers
-        a, b = numeric_sequence[0], numeric_sequence[1]
-        # multiplication/division/add/sub
-        candidates.append(f"{(a * b):.2f}")
-        try:
-            candidates.append(f"{(a / b):.2f}")
-        except Exception:
-            pass
-        candidates.append(f"{(a + b):.2f}")
-        candidates.append(f"{(a - b):.2f}")
-        candidates.append(f"{(b - a):.2f}")
-        # absolute difference
-        candidates.append(f"{(abs(a - b)):.2f}")
-        # try ops inferred from keywords if present
-        if op_mul:
-            candidates.insert(0, f"{(a * b):.2f}")
-        if op_div:
+    # Also attempt to extract number-words from noisy tokens by stripping non-alpha
+    noisy_number_words = []
+    for tok in re.split(r"\s+", challenge):
+        cleaned = re.sub(r"[^a-z]", "", tok.lower())
+        if cleaned and cleaned in number_word_tokens:
             try:
-                candidates.insert(0, f"{(a / b):.2f}")
+                noisy_number_words.append(words_to_num(cleaned))
             except Exception:
                 pass
+    # extend numeric_sequence with these if they seem new
+    for n in noisy_number_words:
+        if n not in numeric_sequence:
+            numeric_sequence.append(n)
+
+    op_mul = re.search(r"(multiplied|times|\bx\b|\*)", readable)
+    op_div = re.search(r"(divided|\/|over)", readable)
+    op_add = re.search(r"(plus|add|sum|and)", readable)
+    op_sub = re.search(r"(minus|subtract|less|net|difference)", readable)
+
+    if len(numeric_sequence) >= 2:
+        # Try a variety of plausible operations between numbers (first two, and aggregates)
+        a, b = numeric_sequence[0], numeric_sequence[1]
+        # pairwise operations for first two
+        candidates.extend([f"{(a * b):.2f}", f"{(a / b):.2f}" if b != 0 else None, f"{(a + b):.2f}", f"{(a - b):.2f}", f"{(b - a):.2f}", f"{(abs(a - b)):.2f}"])
+        # try sums/products over all numeric tokens
+        try:
+            total_sum = sum(numeric_sequence)
+            candidates.append(f"{total_sum:.2f}")
+            prod = 1
+            for n in numeric_sequence:
+                prod *= n
+            candidates.append(f"{prod:.2f}")
+        except Exception:
+            pass
+
+        # try pairwise ops between any two numbers (first 3 pairs)
+        for i in range(min(3, len(numeric_sequence))):
+            for j in range(i+1, min(i+4, len(numeric_sequence))):
+                x = numeric_sequence[i]
+                y = numeric_sequence[j]
+                candidates.append(f"{(x + y):.2f}")
+                candidates.append(f"{(x - y):.2f}")
+                candidates.append(f"{(y - x):.2f}")
+                if y != 0:
+                    candidates.append(f"{(x / y):.2f}")
+                if x != 0:
+                    candidates.append(f"{(y / x):.2f}")
+
+        # try ops inferred from keywords if present — prioritize their likely op
+        if op_mul:
+            candidates.insert(0, f"{(a * b):.2f}")
+        if op_div and b != 0:
+            candidates.insert(0, f"{(a / b):.2f}")
         if op_add:
             candidates.insert(0, f"{(a + b):.2f}")
         if op_sub:

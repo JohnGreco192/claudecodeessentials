@@ -6,19 +6,55 @@ Usage: MOLTBOOK_API_KEY not required for read-only public post checks.
 import re
 import json
 import urllib.request
-from week0.post_daily_close import words_to_num if 'words_to_num' else None
 
-from week0 import post_daily_close as p
+MEMORY_PATH = 'week0/MEMORY.md'
 
-MEMORY_PATH = p.MEMORY_PATH
+
+def words_to_num(text: str) -> int:
+    ones = {
+        'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9
+    }
+    teens = {
+        'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+        'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19
+    }
+    tens = {
+        'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50,
+        'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90
+    }
+    scales = {'hundred': 100, 'thousand': 1000, 'million': 1000000}
+
+    tokens = [t for t in re.split(r"[\s-]+", text.lower()) if t]
+    total = 0
+    current = 0
+    for t in tokens:
+        if t in ones:
+            current += ones[t]
+        elif t in teens:
+            current += teens[t]
+        elif t in tens:
+            current += tens[t]
+        elif t == 'hundred':
+            if current == 0:
+                current = 100
+            else:
+                current *= 100
+        elif t in ('thousand', 'million'):
+            mult = scales.get(t, 1000)
+            if current == 0:
+                total += mult
+            else:
+                total += current * mult
+            current = 0
+        else:
+            continue
+    return total + current
 
 
 def extract_number_words_from_challenge(challenge: str):
-    # reuse post_daily_close parsing heuristics via importing functions where possible
     readable = re.sub(r"[^a-zA-Z0-9\s]", " ", challenge).lower()
-    # digits
     digits = [int(m) for m in re.findall(r"\d+", readable)]
-    # word-seqs
     number_word_tokens = set([
         'zero','one','two','three','four','five','six','seven','eight','nine',
         'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
@@ -35,20 +71,19 @@ def extract_number_words_from_challenge(challenge: str):
                 j += 1
             phrase = " ".join(tokens[i:j])
             try:
-                val = p.words_to_num(phrase)
+                val = words_to_num(phrase)
                 words.append(val)
             except Exception:
                 pass
             i = j
         else:
             i += 1
-    # noisy token scan
     noisy = []
     for tok in re.split(r"\s+", challenge):
         cleaned = re.sub(r"[^a-z]", "", tok.lower())
         if cleaned in number_word_tokens:
             try:
-                noisy.append(p.words_to_num(cleaned))
+                noisy.append(words_to_num(cleaned))
             except Exception:
                 pass
     return digits, words, noisy
@@ -81,9 +116,7 @@ def diagnostics():
                         print('  parsed digits:', digs)
                         print('  parsed word-numbers:', words)
                         print('  parsed noisy word-numbers:', noisy)
-                        # generate candidate list (non-submitting) using internal helper heuristics
                         candidates = []
-                        # try evaluating clean expr
                         expr = re.sub(r"[^0-9+\-*/().\s]", "", challenge).strip()
                         if expr and re.search(r"[+\-*/]", expr):
                             try:
@@ -91,7 +124,7 @@ def diagnostics():
                                 candidates.append(f"{val:.2f}")
                             except Exception:
                                 pass
-                        nums = digits + words + noisy
+                        nums = digs + words + noisy
                         if nums:
                             a = nums[0]
                             if len(nums) > 1:
