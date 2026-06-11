@@ -17,6 +17,10 @@ on:
         description: 'If true, run retry_pending_verifications() and exit (useful to retry pending Moltbook verifications)'
         type: boolean
         default: false
+      repost_failed:
+        description: 'If true, run retry_and_repost_failed() to recreate failed/deleted posts and attempt verification'
+        type: boolean
+        default: false
 
 jobs:
   post:
@@ -53,6 +57,7 @@ jobs:
           ZITRON_RSS_URL: ${{ secrets.ZITRON_RSS_URL }}
           SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
           RETRY_PENDING: ${{ inputs.retry_pending }}
+          REPOST_FAILED: ${{ inputs.repost_failed }}
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
         run: python post_daily_close.py
