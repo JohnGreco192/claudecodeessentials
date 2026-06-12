@@ -2017,21 +2017,45 @@ def _solve_verification(verification: dict) -> bool:
             )
             status_info = f"{r.status_code} {r.text[:120]}"
             print(f"  [verify] status: {status_info}")
+            # Append verbose trace for each candidate attempt
+            try:
+                dbg_path = os.path.join(_DIR, "VERBOSE_DEBUG.md")
+                with open(dbg_path, "a") as dbg:
+                    dbg.write(f"\n[verify] {datetime.now(_UTC).isoformat()} trying: {ans} -> {r.status_code}\n")
+                    body = r.text.replace('\n', ' ')[:2000]
+                    dbg.write(f"response: {body}\n")
+            except Exception:
+                pass
             # Success heuristics: 200/201 and response indicates success
             if r.status_code in (200, 201):
                 try:
                     jr = r.json()
                     if jr.get("success") or jr.get("statusCode") in (200, 201) or "success" in jr.get("message", "").lower():
                         print("  [verify] accepted")
+                        try:
+                            with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
+                                dbg.write(f"[verify] accepted answer: {ans} for code {vc}\n")
+                        except Exception:
+                            pass
                         time.sleep(1)
                         return True
                 except Exception:
                     # Non-JSON success — treat 200 as success
                     print("  [verify] accepted (non-json 200)")
+                    try:
+                        with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
+                            dbg.write(f"[verify] accepted (non-json) answer: {ans} for code {vc}\n")
+                    except Exception:
+                        pass
                     time.sleep(1)
                     return True
         except Exception as e:
             print(f"  [verify] submit failed: {e}")
+            try:
+                with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
+                    dbg.write(f"[verify] submit failed for answer {ans}: {e}\n")
+            except Exception:
+                pass
         time.sleep(1)
 
     print("  [verify] all attempts failed — leaving post pending")
@@ -2044,6 +2068,24 @@ def _post_with_verification(url: str, payload: dict) -> dict:
         data = resp.json()
     except Exception:
         data = {"success": False, "raw": resp.text}
+
+    # Write verbose debug trace (append-only) so CI runs persist details for operator inspection
+    try:
+        dbg_path = os.path.join(_DIR, "VERBOSE_DEBUG.md")
+        with open(dbg_path, "a") as dbg:
+            dbg.write(f"\n--- POST {datetime.now(_UTC).isoformat()} ---\n")
+            dbg.write(f"URL: {url}\n")
+            dbg.write(f"PAYLOAD_KEYS: {list(payload.keys())}\n")
+            try:
+                dbg.write(f"RESPONSE_STATUS: {resp.status_code}\n")
+                # Truncate body for brevity
+                txt = resp.text.replace('\n', ' ')[:2000]
+                dbg.write(f"RESPONSE_BODY_TRUNC: {txt}\n")
+            except Exception as e:
+                dbg.write(f"RESPONSE_INSPECT_FAIL: {e}\n")
+    except Exception:
+        pass
+
     # Challenge lives inside data["post"]["verification"] or data["verification"]
     post_obj = data.get("post", data)
     verification = post_obj.get("verification") or data.get("verification")
