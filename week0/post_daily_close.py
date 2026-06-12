@@ -2008,55 +2008,76 @@ def _solve_verification(verification: dict) -> bool:
         unique_candidates = ["0.00"]
 
     # Try submitting candidates until one is accepted
-    for ans in unique_candidates[:5]:
+    # Increase attempts and add retry/backoff for transient errors (429/5xx)
+    for ans in unique_candidates[:12]:
         print(f"  [verify] trying answer: {ans}")
-        try:
-            r = requests.post(
-                f"{MOLTBOOK_BASE}/verify", headers=_headers(),
-                json={"verification_code": vc, "answer": ans}, timeout=10,
-            )
-            status_info = f"{r.status_code} {r.text[:120]}"
-            print(f"  [verify] status: {status_info}")
-            # Append verbose trace for each candidate attempt
+        attempt = 0
+        max_attempts = 3
+        backoff = 1
+        while attempt < max_attempts:
+            attempt += 1
             try:
-                dbg_path = os.path.join(_DIR, "VERBOSE_DEBUG.md")
-                with open(dbg_path, "a") as dbg:
-                    dbg.write(f"\n[verify] {datetime.now(_UTC).isoformat()} trying: {ans} -> {r.status_code}\n")
-                    body = r.text.replace('\n', ' ')[:2000]
-                    dbg.write(f"response: {body}\n")
-            except Exception:
-                pass
-            # Success heuristics: 200/201 and response indicates success
-            if r.status_code in (200, 201):
+                r = requests.post(
+                    f"{MOLTBOOK_BASE}/verify", headers=_headers(),
+                    json={"verification_code": vc, "answer": ans}, timeout=12,
+                )
+                status_info = f"{r.status_code} {r.text[:120]}"
+                print(f"  [verify] status: {status_info}")
+                # Append verbose trace for each candidate attempt
                 try:
-                    jr = r.json()
-                    if jr.get("success") or jr.get("statusCode") in (200, 201) or "success" in jr.get("message", "").lower():
-                        print("  [verify] accepted")
+                    dbg_path = os.path.join(_DIR, "VERBOSE_DEBUG.md")
+                    with open(dbg_path, "a") as dbg:
+                        dbg.write(f"\n[verify] {datetime.now(_UTC).isoformat()} trying: {ans} attempt:{attempt} -> {r.status_code}\n")
+                        body = r.text.replace('\n', ' ')[:4000]
+                        dbg.write(f"response: {body}\n")
+                except Exception:
+                    pass
+
+                # Success heuristics: 200/201 and response indicates success
+                if r.status_code in (200, 201):
+                    try:
+                        jr = r.json()
+                        if jr.get("success") or jr.get("statusCode") in (200, 201) or "success" in jr.get("message", "").lower():
+                            print("  [verify] accepted")
+                            try:
+                                with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
+                                    dbg.write(f"[verify] accepted answer: {ans} for code {vc}\n")
+                            except Exception:
+                                pass
+                            time.sleep(1)
+                            return True
+                    except Exception:
+                        # Non-JSON success — treat 200 as success
+                        print("  [verify] accepted (non-json 200)")
                         try:
                             with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
-                                dbg.write(f"[verify] accepted answer: {ans} for code {vc}\n")
+                                dbg.write(f"[verify] accepted (non-json) answer: {ans} for code {vc}\n")
                         except Exception:
                             pass
                         time.sleep(1)
                         return True
+
+                # If server-rate-limited or 5xx, retry
+                if r.status_code == 429 or (500 <= r.status_code < 600):
+                    print(f"  [verify] transient error {r.status_code}, retrying after {backoff}s")
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                # Explicit incorrect answer (400/422) — don't retry this candidate
+                break
+            except Exception as e:
+                print(f"  [verify] submit failed: {e}")
+                try:
+                    with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
+                        dbg.write(f"[verify] submit exception for answer {ans} attempt:{attempt}: {e}\n")
                 except Exception:
-                    # Non-JSON success — treat 200 as success
-                    print("  [verify] accepted (non-json 200)")
-                    try:
-                        with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
-                            dbg.write(f"[verify] accepted (non-json) answer: {ans} for code {vc}\n")
-                    except Exception:
-                        pass
-                    time.sleep(1)
-                    return True
-        except Exception as e:
-            print(f"  [verify] submit failed: {e}")
-            try:
-                with open(os.path.join(_DIR, "VERBOSE_DEBUG.md"), "a") as dbg:
-                    dbg.write(f"[verify] submit failed for answer {ans}: {e}\n")
-            except Exception:
-                pass
-        time.sleep(1)
+                    pass
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+        # small pause between different candidates to avoid rate limits
+        time.sleep(0.7)
 
     print("  [verify] all attempts failed — leaving post pending")
     return False
