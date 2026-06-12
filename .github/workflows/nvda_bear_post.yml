@@ -49,6 +49,22 @@ jobs:
       - name: Install dependencies
         run: pip install openai yfinance requests feedparser httpx youtube-transcript-api -q
 
+      - name: Debug: show workflow inputs and secret presence
+        working-directory: week0
+        env:
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
+          RETRY_PENDING: ${{ inputs.retry_pending }}
+          REPOST_FAILED: ${{ inputs.repost_failed }}
+        run: |
+          echo "INPUTS: SKIP_STARTUP_DELAY=${SKIP_STARTUP_DELAY} RETRY_PENDING=${RETRY_PENDING} REPOST_FAILED=${REPOST_FAILED}"
+          if [ -z "${MOLTBOOK_API_KEY}" ]; then
+            echo "MOLTBOOK_API_KEY: <missing>"
+            # continue so we still see the step output; do not expose the secret
+          else
+            echo "MOLTBOOK_API_KEY: <present>"
+          fi
+
       - name: Post NVDA daily close rant to Moltbook
         working-directory: week0
         env:
