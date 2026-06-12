@@ -86,3 +86,16 @@ jobs:
           git add "week0/MEMORY.md"
           git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
           git push
+
+      - name: Persist VERBOSE_DEBUG.md (if created)
+        if: always()
+        run: |
+          if [ -f week0/VERBOSE_DEBUG.md ]; then
+            git config user.name "nvda_regard"
+            git config user.email "actions@github.com"
+            git add "week0/VERBOSE_DEBUG.md"
+            git diff --cached --quiet || git commit -m "chore: add verbose Moltbook debug trace [skip ci]"
+            git push
+          else
+            echo "VERBOSE_DEBUG.md not present; skipping commit"
+          fi
