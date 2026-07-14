@@ -158,12 +158,18 @@ with open(MEMORY_PATH) as f:
     content = f.read()
 
 argument_log = []
-al = re.search(r"## Argument Log\n((?:- .+\n?)*)", content)
-if al:
-    for line in al.group(1).strip().splitlines():
-        m = re.match(r"- (\d{4}-\d{2}-\d{2}) \| (.+)", line.strip())
-        if m:
-            argument_log.append({"date": m.group(1), "argument": m.group(2).strip()})
+section_match = re.search(r"## Argument Log\n((?:.*\n?)*)", content)
+if section_match:
+    section = section_match.group(1)
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("- "):
+            continue
+        entry = line[2:].strip()
+        m = re.match(r"(\d{4}-\d{2}-\d{2})\s*(?:\||:|-)\s*(.+)", entry)
+        if not m:
+            continue
+        argument_log.append({"date": m.group(1), "argument": m.group(2).strip()})
 
 check("MEMORY.md argument log parses with dates", len(argument_log) > 0,
       f"found {len(argument_log)} entries")

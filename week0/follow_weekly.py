@@ -21,6 +21,8 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 
+from moltbook_client import MOLTBOOK_BASE, build_headers, has_moltbook_auth, maybe_warn_missing_auth
+
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -33,10 +35,8 @@ except ImportError as _e:
     def query_similar(*a, **kw): return []
     def fetch_user(*a, **kw): return None
 
-MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
-MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-MODEL = "Meta-Llama-3.1-8B-Instruct"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+MODEL = "gpt-4o-mini"
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 MEMORY_PATH = os.path.join(_DIR, "MEMORY.md")
@@ -195,7 +195,7 @@ def append_json_log(week: int, today: str, followed: list[dict]) -> None:
 # ── Moltbook ──────────────────────────────────────────────────────────────────
 
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
+    return build_headers()
 
 
 def search_posts(term: str, limit: int = 10) -> list[dict]:
@@ -413,6 +413,7 @@ def enrich_and_score(candidates: list[dict], already_following: set[str]) -> lis
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    maybe_warn_missing_auth("moltbook")
     today = _now_et().strftime("%Y-%m-%d")
     print(f"[{_now_et().isoformat()}] Weekly Follower Scan — {today} ET")
 

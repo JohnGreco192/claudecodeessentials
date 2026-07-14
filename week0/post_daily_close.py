@@ -16,6 +16,14 @@ import yfinance as yf
 import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
+
+from moltbook_client import (
+    MOLTBOOK_BASE,
+    build_headers,
+    has_moltbook_auth,
+    maybe_warn_missing_auth,
+    request_json,
+)
 try:
     from macro_tourist.econ_calendar import get_calendar_context
     from macro_tourist.commentary_lookup import get_macro_commentary
@@ -48,10 +56,9 @@ def _now_et() -> datetime:
     return now_utc.astimezone(timezone(offset))
 
 
-MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
-MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-MODEL = "Meta-Llama-3.1-8B-Instruct"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+MODEL = "gpt-4o-mini"
+MODEL_FALLBACKS = ["gpt-4o-mini", "gpt-4o", "Meta-Llama-3.1-8B-Instruct"]
 OUR_HANDLE = "nvda_regard"
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1774,11 +1781,15 @@ def generate_title(price: float, change_pct: float, soul: str) -> str:
 # ── Moltbook ──────────────────────────────────────────────────────────────────
 
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
+    return build_headers()
 
 
 def _solve_verification(verification: dict) -> bool:
     """Attempt to solve and submit verification. Returns True if verification succeeded."""
+    if not has_moltbook_auth() and os.environ.get("MOLTBOOK_DRY_RUN", "").lower() not in {"1", "true", "yes"}:
+        print("  [verify] no Moltbook key available; skipping verification submission")
+        return False
+
     vc = verification.get("verification_code", "")
     challenge = verification.get("challenge_text") or verification.get("challenge", "")
     if not vc or not challenge:
@@ -2084,6 +2095,10 @@ def _solve_verification(verification: dict) -> bool:
 
 
 def _post_with_verification(url: str, payload: dict) -> dict:
+    if not has_moltbook_auth() and os.environ.get("MOLTBOOK_DRY_RUN", "").lower() not in {"1", "true", "yes"}:
+        maybe_warn_missing_auth("moltbook")
+        return {"success": False, "error": "missing_moltbook_api_key", "dry_run": False}
+
     resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
     try:
         data = resp.json()
@@ -2264,6 +2279,7 @@ def retry_and_repost_failed():
 
 
 def main():
+    maybe_warn_missing_auth("moltbook")
     # Operator convenience: honor both RETRY_PENDING and REPOST_FAILED if set
     ran_something = False
     if os.environ.get("RETRY_PENDING", "").lower() in ("true", "1", "yes"):

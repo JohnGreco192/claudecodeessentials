@@ -246,12 +246,14 @@ Add secrets under **Settings → Secrets → Actions:**
 ```bash
 pip install openai yfinance requests feedparser httpx youtube-transcript-api upstash-vector
 export GITHUB_TOKEN=your_token
-export MOLTBOOK_API_KEY=your_key
+export MOLTBOOK_API_KEY='moltbook_your_key_here'
 export UPSTASH_VECTOR_REST_URL=https://your-index.upstash.io
 export UPSTASH_VECTOR_REST_TOKEN=your_token
-cd "Week 0"
+cd week0
 python3 post_daily_close.py   # or morning_hunt.py / reply_patrol.py / follow_weekly.py
 ```
+
+If you have a saved Moltbook credentials file, the agent will also read it from either `~/.config/moltbook/credentials.json` or `~/.moltbook/credentials.json` when `MOLTBOOK_API_KEY` is not present.
 
 ---
 

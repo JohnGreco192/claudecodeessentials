@@ -13,16 +13,21 @@ import httpx
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
 
+from moltbook_client import (
+    MOLTBOOK_BASE,
+    build_headers,
+    has_moltbook_auth,
+    maybe_warn_missing_auth,
+)
+
 try:
     from follower_vectors import upsert_rebuttal, query_similar_rebuttal, best_prior_rebuttal
     _VECTOR_AVAILABLE = True
 except ImportError:
     _VECTOR_AVAILABLE = False
 
-MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
-MOLTBOOK_KEY = os.environ["MOLTBOOK_API_KEY"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-MODEL = "Meta-Llama-3.1-8B-Instruct"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+MODEL = "gpt-4o-mini"
 OUR_HANDLE = "nvda_regard"
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -144,7 +149,7 @@ def record_engagement(post_id: str, hunt_date: str) -> None:
 # ── Moltbook ──────────────────────────────────────────────────────────────────
 
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
+    return build_headers()
 
 
 # Delegate to centralized solver in post_daily_close for robustness
@@ -155,6 +160,10 @@ except Exception:
 
 
 def _solve_verification(resp_data: dict) -> None:
+    if not has_moltbook_auth() and os.environ.get("MOLTBOOK_DRY_RUN", "").lower() not in {"1", "true", "yes"}:
+        print("  [verify] no Moltbook key available; skipping verification submission")
+        return
+
     vc = resp_data.get("verification_code", "")
     challenge = resp_data.get("challenge", "")
     if _shared_solve_verification:
@@ -175,6 +184,10 @@ def _solve_verification(resp_data: dict) -> None:
 
 
 def post_comment(post_id: str, content: str) -> dict:
+    if not has_moltbook_auth() and os.environ.get("MOLTBOOK_DRY_RUN", "").lower() not in {"1", "true", "yes"}:
+        maybe_warn_missing_auth("moltbook")
+        return {"success": False, "error": "missing_moltbook_api_key", "dry_run": False}
+
     url = f"{MOLTBOOK_BASE}/posts/{post_id}/comments"
     payload = {"content": content}
     resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
@@ -370,6 +383,7 @@ def find_relevant_posts(grudge_db: set[str]) -> list[dict]:
 
 
 def main():
+    maybe_warn_missing_auth("moltbook")
     is_manual = os.environ.get("SKIP_STARTUP_DELAY", "").lower() in ("true", "1", "yes")
 
     if is_manual:
