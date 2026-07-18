@@ -2416,6 +2416,26 @@ def main():
     if catalyst_assessment.get("black_swan_watch"):
         print(f"  ⚠️ black swan watch: {catalyst_assessment['black_swan_watch']}")
 
+    bear_score = compute_bear_score(
+        price=price,
+        market=market,
+        headlines=market_headlines,
+        earnings_context=earnings_context,
+        catalyst_assessment=catalyst_assessment,
+        zitron=zitron,
+        social_posts=social_posts,
+        plan=plan,
+    )
+    threshold = float(os.environ.get("BEAR_THRESHOLD", "7.5"))
+    force_post = os.environ.get("FORCE_POST", "").lower() in ("1", "true", "yes")
+    if force_post:
+        print("  [post] manual force override enabled — posting regardless of bear score")
+    else:
+        print(f"  [post] bear score: {bear_score:.1f}/10 (threshold {threshold})")
+        if bear_score < threshold:
+            print("  [post] conditions are not bearish enough. Skipping post for today.")
+            return
+
     # Macro tourist tools — non-blocking; failures never stop the post
     macro_calendar = ""
     macro_commentary = ""

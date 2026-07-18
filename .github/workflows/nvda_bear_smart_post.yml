@@ -1,0 +1,107 @@
+name: NVDA Bear Smart Daily Post
+
+on:
+  schedule:
+    - cron: "45 20 * * 1-5"  # Weekdays at 4:45pm ET / 20:45 UTC
+  workflow_dispatch:
+    inputs:
+      force_post:
+        description: 'Force a post regardless of the bear score'
+        type: boolean
+        default: false
+      threshold:
+        description: 'Bear score threshold for automatic posting'
+        type: number
+        default: 7.5
+      skip_delay:
+        description: 'Skip startup delay and random skip (for testing)'
+        type: boolean
+        default: false
+      retry_pending:
+        description: 'Run pending verification retries and exit'
+        type: boolean
+        default: false
+      repost_failed:
+        description: 'Repost failed or deleted entries and attempt verification'
+        type: boolean
+        default: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      models: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify OpenClaw bootstrap files
+        working-directory: week0
+        run: |
+          [ -f SOUL.md ]   && echo "✅ SOUL.md found"   || (echo "❌ SOUL.md missing"   && exit 1)
+          [ -f MEMORY.md ] && echo "✅ MEMORY.md found" || (echo "❌ MEMORY.md missing" && exit 1)
+          [ -f USER.md ]   && echo "✅ USER.md found"   || (echo "❌ USER.md missing"   && exit 1)
+          [ -f AGENTS.md ] && echo "✅ AGENTS.md found" || (echo "❌ AGENTS.md missing" && exit 1)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install openai yfinance requests feedparser httpx youtube-transcript-api -q
+
+      - name: Debug: show workflow inputs and secret presence
+        working-directory: week0
+        env:
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
+          FORCE_POST: ${{ inputs.force_post }}
+          BEAR_THRESHOLD: ${{ inputs.threshold }}
+          RETRY_PENDING: ${{ inputs.retry_pending }}
+          REPOST_FAILED: ${{ inputs.repost_failed }}
+        run: |
+          echo "INPUTS: SKIP_STARTUP_DELAY=${SKIP_STARTUP_DELAY} FORCE_POST=${FORCE_POST} THRESHOLD=${BEAR_THRESHOLD} RETRY_PENDING=${RETRY_PENDING} REPOST_FAILED=${REPOST_FAILED}"
+          if [ -z "${MOLTBOOK_API_KEY}" ]; then
+            echo "MOLTBOOK_API_KEY: <missing>"
+          else
+            echo "MOLTBOOK_API_KEY: <present>"
+          fi
+
+      - name: Run NVDA Bear Smart Daily Post
+        working-directory: week0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          ZITRON_RSS_URL: ${{ secrets.ZITRON_RSS_URL }}
+          UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+          UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+          SKIP_STARTUP_DELAY: ${{ inputs.skip_delay }}
+          FORCE_POST: ${{ inputs.force_post }}
+          BEAR_THRESHOLD: ${{ inputs.threshold }}
+          RETRY_PENDING: ${{ inputs.retry_pending }}
+          REPOST_FAILED: ${{ inputs.repost_failed }}
+        run: python post_daily_close.py
+
+      - name: Persist MEMORY.md state
+        if: always()
+        run: |
+          git config user.name "nvda_regard"
+          git config user.email "actions@github.com"
+          git add "week0/MEMORY.md"
+          git diff --cached --quiet || git commit -m "chore: update MEMORY.md [skip ci]"
+          git push
+
+      - name: Persist VERBOSE_DEBUG.md (if created)
+        if: always()
+        run: |
+          if [ -f week0/VERBOSE_DEBUG.md ]; then
+            git config user.name "nvda_regard"
+            git config user.email "actions@github.com"
+            git add "week0/VERBOSE_DEBUG.md"
+            git diff --cached --quiet || git commit -m "chore: add verbose Moltbook debug trace [skip ci]"
+            git push
+          else
+            echo "VERBOSE_DEBUG.md not present; skipping commit"
